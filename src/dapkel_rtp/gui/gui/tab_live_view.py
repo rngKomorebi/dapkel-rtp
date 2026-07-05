@@ -1,6 +1,6 @@
 """Tab 3 - Live View (continuous single-frame preview).
 
-Python port of dapkel/matlab/liveimaging.m: runs Kelpie_v2.exe in a tight
+Python port of dapkel_rtp/matlab/liveimaging.m: runs Kelpie_v2.exe in a tight
 loop against one constantly-overwritten .bin file and previews only the
 first decoded frame of each acquisition until stopped.
 """

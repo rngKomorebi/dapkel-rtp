@@ -15,7 +15,7 @@ try:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     # Interactive window — locate via installed package
-    import dapkel as _pkg
+    import dapkel_rtp as _pkg
 
     SCRIPT_DIR = os.path.join(
         os.path.dirname(_pkg.__file__), "functions", "tools"
@@ -28,7 +28,7 @@ HELPERS_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "helpers")
 BITFILE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../../params/camera"))
 
 try:
-    from dapkel.functions.unpack import unpack_kelpie_binary_data
+    from dapkel_rtp.functions.unpack import unpack_kelpie_binary_data
 except ImportError:
     if SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SCRIPT_DIR)

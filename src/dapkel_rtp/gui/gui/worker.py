@@ -200,7 +200,7 @@ class LiveViewWorker(QThread):
     Two modes:
 
     * Single-channel (32x32): python port of the acquire-decode-display
-      loop in dapkel/matlab/liveimaging.m (lines 51-71): each pass
+      loop in dapkel_rtp/matlab/liveimaging.m (lines 51-71): each pass
       reacquires ``nframes`` frames into one constantly-overwritten .bin
       file and decodes only frame 0 for the live preview, since the loop
       itself supplies the frame rate.
@@ -260,7 +260,7 @@ class LiveViewWorker(QThread):
     # ------------------------------------------------------------------
 
     def _run_32(self, exe_path: str):
-        from dapkel.functions.unpack import unpack_kelpie_binary_data
+        from dapkel_rtp.functions.unpack import unpack_kelpie_binary_data
 
         p = self.params
         # The exe does string concatenation so it needs a trailing separator
@@ -308,7 +308,7 @@ class LiveViewWorker(QThread):
     # ------------------------------------------------------------------
 
     def _run_64(self, exe_path: str):
-        from dapkel.functions.unpack import unpack_kelpie_binary_data
+        from dapkel_rtp.functions.unpack import unpack_kelpie_binary_data
 
         p = self.params
         folder_exe = p["folder"].rstrip(os.sep) + os.sep

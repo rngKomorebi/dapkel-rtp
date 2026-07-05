@@ -3,14 +3,15 @@
 Run directly:
     python main.py
 
-Build a standalone executable with PyInstaller:
-    pyinstaller --clean --onefile --noconsole main.py
+Build a standalone executable with PyInstaller (uses main.spec, which bundles
+the program files/bitfile/helper exes that plain --onefile can't discover):
+    pyinstaller --clean main.spec
 """
 
 import os
 import sys
 
-# Ensure the src/ directory is on the path so `dapkel` is importable
+# Ensure the src/ directory is on the path so `dapkel_rtp` is importable
 # when running from the repo root or from a bundled exe.
 try:
     _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,8 +23,8 @@ if _HERE not in sys.path:
 
 from PyQt5.QtWidgets import QApplication
 
-from dapkel.gui.gui.main_window import MainWindow
-from dapkel.gui.gui.style import apply_mpl_dark, apply_qss
+from dapkel_rtp.gui.gui.main_window import MainWindow
+from dapkel_rtp.gui.gui.style import apply_mpl_dark, apply_qss
 
 
 def main():

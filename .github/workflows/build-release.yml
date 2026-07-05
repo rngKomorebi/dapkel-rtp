@@ -1,0 +1,48 @@
+name: Build and release Windows executable
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # main.spec (not `pyinstaller --onefile main.py`) is required here --
+      # it's the only thing that bundles the program files, bitfile, and
+      # helper exes/dlls that PyInstaller's static analysis can't discover
+      # on its own (see main.spec's datas list).
+      - name: Build executable
+        working-directory: src
+        run: pyinstaller --clean main.spec
+
+      - name: Compute short commit SHA
+        id: vars
+        shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}-${{ steps.vars.outputs.sha_short }}
+          name: "Build #${{ github.run_number }} (${{ steps.vars.outputs.sha_short }})"
+          body: |
+            Automated build from commit ${{ github.sha }}.
+          files: src/dist/DAPKEL-RTP.exe

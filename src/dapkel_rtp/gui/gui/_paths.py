@@ -9,31 +9,31 @@ import sys
 
 
 def _base() -> str:
-    """Root of the dapkel package, regardless of execution context."""
+    """Root of the dapkel_rtp package, regardless of execution context."""
     if getattr(sys, "frozen", False):
         # PyInstaller onefile — files extracted to sys._MEIPASS
-        return os.path.join(sys._MEIPASS, "dapkel")  # type: ignore[attr-defined]
-    # Source tree: this file is at  dapkel/gui/gui/_paths.py
+        return os.path.join(sys._MEIPASS, "dapkel_rtp")  # type: ignore[attr-defined]
+    # Source tree: this file is at  dapkel_rtp/gui/gui/_paths.py
     return os.path.normpath(os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def functions_dir() -> str:
-    """dapkel/functions/helpers/ — Kelpie_v2.exe and related binaries live here."""
+    """dapkel_rtp/functions/helpers/ — Kelpie_v2.exe and related binaries live here."""
     return os.path.join(_base(), "functions", "helpers")
 
 
 def programs_dir() -> str:
-    """dapkel/params/camera/programs/ — program_*.txt FPGA configuration files."""
+    """dapkel_rtp/params/camera/programs/ — program_*.txt FPGA configuration files."""
     return os.path.join(_base(), "params", "camera", "programs")
 
 
 def bitfile_dir() -> str:
-    """dapkel/params/camera/bitfile/ — FPGA bitfile (.bit)."""
+    """dapkel_rtp/params/camera/bitfile/ — FPGA bitfile (.bit)."""
     return os.path.join(_base(), "params", "camera", "bitfile")
 
 
 def params_camera_dir() -> str:
-    """dapkel/params/camera/ — cwd for Kelpie_v2_pwr_mgt.exe.
+    """dapkel_rtp/params/camera/ — cwd for Kelpie_v2_pwr_mgt.exe.
 
     The exe opens './bitfile/Kelpie_top.bit' relative to its working directory,
     so it must be launched from this directory.
