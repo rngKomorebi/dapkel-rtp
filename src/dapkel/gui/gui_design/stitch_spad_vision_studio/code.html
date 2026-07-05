@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>KELPIE_CORE v2.1 | Acquisition Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;700&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        /* Custom scrollbar for technical interface */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #0e1419; }
+        ::-webkit-scrollbar-thumb { background: #3a494b; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #849495; }
+
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-red {
+            animation: pulse-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        
+        .photon-canvas {
+            background-image: 
+                linear-gradient(to right, rgba(0, 109, 119, 0.1) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(0, 109, 119, 0.1) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        .dual-range-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 4px;
+            background: #3a494b;
+            outline: none;
+        }
+        .dual-range-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 2px;
+            height: 16px;
+            background: #00dbe7;
+            cursor: pointer;
+        }
+    </style>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "tertiary-fixed": "#ffdad5",
+                    "on-tertiary-fixed-variant": "#930005",
+                    "secondary-container": "#feb700",
+                    "on-tertiary-container": "#c3000a",
+                    "surface-container-high": "#2a2a2c",
+                    "on-background": "#e5e1e4",
+                    "surface": "#0e1419",
+                    "on-error-container": "#ffdad6",
+                    "secondary": "#ffdb9d",
+                    "outline": "#849495",
+                    "primary": "#e1fdff",
+                    "on-tertiary": "#690003",
+                    "on-secondary-container": "#6b4b00",
+                    "on-surface-variant": "#b9cacb",
+                    "surface-variant": "#353437",
+                    "surface-container-lowest": "#090f14",
+                    "on-secondary": "#412d00",
+                    "on-primary-fixed-variant": "#004f54",
+                    "surface-container-low": "#161c21",
+                    "on-error": "#690005",
+                    "surface-container": "#1a2025",
+                    "inverse-on-surface": "#303032",
+                    "outline-variant": "#3a494b",
+                    "tertiary-container": "#ffd0ca",
+                    "on-primary-fixed": "#002022",
+                    "on-secondary-fixed": "#271900",
+                    "on-primary-container": "#006a71",
+                    "on-primary": "#00363a",
+                    "on-surface": "#e5e1e4",
+                    "secondary-fixed-dim": "#ffba20",
+                    "on-tertiary-fixed": "#410001",
+                    "primary-fixed": "#74f5ff",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#343a40",
+                    "inverse-surface": "#e5e1e4",
+                    "error-container": "#93000a",
+                    "surface-dim": "#0e1419",
+                    "on-secondary-fixed-variant": "#5e4200",
+                    "surface-tint": "#00dbe7",
+                    "primary-fixed-dim": "#00dbe7",
+                    "inverse-primary": "#00696f",
+                    "secondary-fixed": "#ffdea8",
+                    "tertiary-fixed-dim": "#ffb4aa",
+                    "primary-container": "#00f2ff",
+                    "background": "#0e1419",
+                    "surface-container-highest": "#353437",
+                    "tertiary": "#fff5f4",
+                    /* Kelpie Design System Accents */
+                    "loch-teal": "#006d77",
+                    "bioluminescent": "#83c5be"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "gutter": "12px",
+                    "panel-padding": "8px",
+                    "sidebar-width": "280px",
+                    "margin": "16px"
+            },
+            "fontFamily": {
+                    "data-lg": ["JetBrains Mono"],
+                    "headline-lg": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "body-md": ["Inter"],
+                    "label-caps": ["JetBrains Mono"],
+                    "data-md": ["JetBrains Mono"]
+            },
+            "fontSize": {
+                    "data-lg": ["18px", {"lineHeight": "24px", "fontWeight": "500"}],
+                    "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                    "headline-md": ["18px", {"lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-caps": ["11px", {"lineHeight": "16px", "letterSpacing": "0.06em", "fontWeight": "700"}],
+                    "data-md": ["14px", {"lineHeight": "18px", "fontWeight": "500"}]
+            }
+          },
+        },
+      }
+    </script>
+</head>
+<body class="bg-background text-on-surface selection:bg-loch-teal/30 overflow-hidden h-screen flex flex-col">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center px-margin h-12 w-full z-50 bg-surface border-b border-outline-variant fixed top-0 left-0">
+<div class="flex items-center gap-gutter">
+<span class="font-label-caps text-label-caps text-bioluminescent tracking-tighter">KELPIE DETECTOR SYSTEM v2.1</span>
+<nav class="hidden md:flex gap-6 ml-8">
+<a class="font-data-md text-data-md text-bioluminescent border-b-2 border-bioluminescent pb-1 transition-colors duration-150" href="#">Acquisition</a>
+<a class="font-data-md text-data-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high px-2 transition-colors duration-150" href="#">Analysis</a>
+<a class="font-data-md text-data-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high px-2 transition-colors duration-150" href="#">Hardware</a>
+<a class="font-data-md text-data-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high px-2 transition-colors duration-150" href="#">Data</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-bioluminescent transition-colors">thermostat</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-bioluminescent transition-colors">speed</span>
+<span class="material-symbols-outlined text-error animate-pulse-red" title="High Voltage Alert">bolt</span>
+</div>
+</header>
+<div class="flex flex-1 pt-12 overflow-hidden">
+<!-- SideNavBar -->
+<aside class="flex flex-col h-full py-panel-padding bg-surface-container-low border-r border-outline-variant fixed left-0 top-12 w-sidebar-width z-40">
+<div class="px-margin mb-6">
+<h1 class="font-headline-md text-headline-md text-on-surface">CONTROL PANEL</h1>
+<p class="font-label-caps text-label-caps text-on-surface-variant opacity-60">KELPIE_ARRAY_01</p>
+</div>
+<nav class="flex-1 space-y-1">
+<button class="w-full flex items-center gap-3 px-margin py-3 bg-surface-container-high text-bioluminescent border-l-2 border-bioluminescent transition-all duration-200">
+<span class="material-symbols-outlined">exposure</span>
+<span class="font-label-caps text-label-caps">Exposure</span>
+</button>
+<button class="w-full flex items-center gap-3 px-margin py-3 text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200">
+<span class="material-symbols-outlined">settings_input_component</span>
+<span class="font-label-caps text-label-caps">Trigger</span>
+</button>
+<button class="w-full flex items-center gap-3 px-margin py-3 text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200">
+<span class="material-symbols-outlined">ac_unit</span>
+<span class="font-label-caps text-label-caps">Cooling</span>
+</button>
+<button class="w-full flex items-center gap-3 px-margin py-3 text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200">
+<span class="material-symbols-outlined">straighten</span>
+<span class="font-label-caps text-label-caps">Gating</span>
+</button>
+</nav>
+<div class="px-margin mt-auto mb-4">
+<button class="w-full bg-loch-teal text-white font-label-caps text-label-caps py-3 tracking-widest hover:bg-bioluminescent hover:text-surface active:scale-95 transition-all">ARM SYSTEM</button>
+</div>
+<div class="border-t border-outline-variant/30 pt-4 space-y-1">
+<button class="w-full flex items-center gap-3 px-margin py-2 text-on-surface-variant hover:bg-surface-container-high transition-all">
+<span class="material-symbols-outlined text-[18px]">settings</span>
+<span class="font-label-caps text-[10px]">Settings</span>
+</button>
+<button class="w-full flex items-center gap-3 px-margin py-2 text-on-surface-variant hover:bg-surface-container-high transition-all">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+<span class="font-label-caps text-[10px]">Logs</span>
+</button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-sidebar-width flex-1 flex flex-col overflow-hidden bg-background p-4 gap-4">
+<div class="flex-1 flex gap-4 min-h-0">
+<!-- Live Photon Stream Viewport -->
+<div class="flex-1 flex flex-col bg-surface border border-outline-variant overflow-hidden">
+<div class="flex justify-between items-center bg-surface-container px-3 py-1.5 border-b border-outline-variant">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-bioluminescent animate-pulse"></div>
+<span class="font-label-caps text-label-caps text-on-surface">LIVE PHOTON STREAM</span>
+</div>
+<span class="font-data-md text-[12px] text-on-surface-variant">512 x 512 | 1000 FPS</span>
+</div>
+<div class="relative flex-1 bg-surface-container-lowest photon-canvas overflow-hidden" id="photon-stream">
+<canvas class="w-full h-full" id="photonCanvas"></canvas>
+<!-- HUD Overlays -->
+<div class="absolute top-4 left-4 p-2 bg-surface/80 border border-outline-variant backdrop-blur-md">
+<div class="font-label-caps text-[10px] text-on-surface-variant">PEAK COUNT</div>
+<div class="font-data-lg text-bioluminescent">12,482 <span class="text-[10px]">cps</span></div>
+</div>
+<div class="absolute bottom-4 right-4 flex gap-2">
+<button class="p-2 bg-surface/80 border border-outline-variant text-on-surface hover:text-bioluminescent transition-colors">
+<span class="material-symbols-outlined text-[20px]">videocam</span>
+</button>
+<button class="p-2 bg-surface/80 border border-outline-variant text-on-surface hover:text-bioluminescent transition-colors">
+<span class="material-symbols-outlined text-[20px]">photo_camera</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Right Sidebar Controls -->
+<div class="w-72 flex flex-col gap-4 overflow-y-auto">
+<!-- Exposure Control Group -->
+<section class="bg-surface border border-outline-variant flex flex-col">
+<div class="px-3 py-2 bg-surface-container border-b border-outline-variant">
+<span class="font-label-caps text-label-caps text-on-surface">EXPOSURE CONTROL</span>
+</div>
+<div class="p-4 space-y-6">
+<div class="space-y-3">
+<div class="flex justify-between">
+<label class="font-label-caps text-[10px] text-on-surface-variant">INTEGRATION TIME (ms)</label>
+<span class="font-data-md text-bioluminescent" id="integration-val">50.00</span>
+</div>
+<input class="w-full h-1 bg-outline-variant rounded-full appearance-none cursor-pointer accent-bioluminescent" max="1000" min="0.01" oninput="document.getElementById('integration-val').innerText = parseFloat(this.value).toFixed(2)" step="0.01" type="range" value="50"/>
+<div class="flex justify-between font-label-caps text-[8px] text-on-surface-variant/50">
+<span>0.01</span>
+<span>500</span>
+<span>1000</span>
+</div>
+</div>
+<div class="space-y-2">
+<label class="font-label-caps text-[10px] text-on-surface-variant">SENSOR GAIN</label>
+<div class="relative">
+<select class="w-full bg-surface-container-low border border-outline-variant px-2 py-1.5 font-data-md text-on-surface appearance-none focus:border-bioluminescent focus:ring-0 outline-none">
+<option>x1 (Low Noise)</option>
+<option selected="">x2 (Standard)</option>
+<option>x4 (High Sensitivity)</option>
+<option>x8 (Ultra High)</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-on-surface-variant">expand_more</span>
+</div>
+</div>
+<div class="flex justify-between items-center">
+<label class="font-label-caps text-[10px] text-on-surface-variant">PERSISTENCE MODE</label>
+<button class="w-10 h-5 bg-loch-teal rounded-full relative transition-colors" onclick="this.classList.toggle('bg-loch-teal'); this.classList.toggle('bg-outline-variant')">
+<div class="absolute top-1 left-1 w-3 h-3 bg-surface rounded-full transition-transform translate-x-5"></div>
+</button>
+</div>
+</div>
+</section>
+<!-- Time-Gate Section -->
+<section class="bg-surface border border-outline-variant flex flex-col">
+<div class="px-3 py-2 bg-surface-container border-b border-outline-variant">
+<span class="font-label-caps text-label-caps text-on-surface">TIME-GATE MAPPING</span>
+</div>
+<div class="p-4 space-y-4">
+<div class="h-24 bg-surface-container-lowest border border-outline-variant relative overflow-hidden flex items-end">
+<div class="absolute inset-0 opacity-10 bg-gradient-to-t from-loch-teal to-transparent"></div>
+<div class="w-full h-16 flex items-end justify-between px-1">
+<div class="w-1 bg-loch-teal/20 h-8"></div>
+<div class="w-1 bg-loch-teal/40 h-12"></div>
+<div class="w-1 bg-loch-teal h-20"></div>
+<div class="w-1 bg-loch-teal h-16"></div>
+<div class="w-1 bg-loch-teal/40 h-8"></div>
+<div class="w-1 bg-loch-teal/20 h-4"></div>
+<div class="w-1 bg-loch-teal/10 h-2"></div>
+</div>
+<div class="absolute h-full border-x border-bioluminescent bg-bioluminescent/10 transition-all" id="gate-visual" style="left: 20%; right: 40%"></div>
+</div>
+<div class="space-y-4">
+<div class="grid grid-cols-2 gap-4">
+<div class="space-y-1">
+<label class="font-label-caps text-[9px] text-on-surface-variant">START (ns)</label>
+<div class="flex items-center border border-outline-variant bg-surface-container-low">
+<input class="w-full bg-transparent border-none font-data-md text-on-surface focus:ring-0 p-1 text-center" id="gate-start" type="number" value="20"/>
+<div class="flex flex-col border-l border-outline-variant">
+<button class="px-1 hover:bg-surface-container-high"><span class="material-symbols-outlined text-[14px]">expand_less</span></button>
+<button class="px-1 hover:bg-surface-container-high border-t border-outline-variant"><span class="material-symbols-outlined text-[14px]">expand_more</span></button>
+</div>
+</div>
+</div>
+<div class="space-y-1">
+<label class="font-label-caps text-[9px] text-on-surface-variant">END (ns)</label>
+<div class="flex items-center border border-outline-variant bg-surface-container-low">
+<input class="w-full bg-transparent border-none font-data-md text-on-surface focus:ring-0 p-1 text-center" id="gate-end" type="number" value="60"/>
+<div class="flex flex-col border-l border-outline-variant">
+<button class="px-1 hover:bg-surface-container-high"><span class="material-symbols-outlined text-[14px]">expand_less</span></button>
+<button class="px-1 hover:bg-surface-container-high border-t border-outline-variant"><span class="material-symbols-outlined text-[14px]">expand_more</span></button>
+</div>
+</div>
+</div>
+</div>
+<input class="dual-range-slider w-full" disabled="" type="range"/>
+</div>
+</div>
+</section>
+</div>
+</div>
+<!-- Bottom Histogram Widget -->
+<div class="h-48 bg-surface border border-outline-variant flex flex-col">
+<div class="px-3 py-1.5 bg-surface-container border-b border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps text-on-surface">REAL-TIME HISTOGRAM (COINCIDENCE WINDOW)</span>
+<div class="flex gap-4 font-label-caps text-[10px] text-on-surface-variant">
+<div class="flex items-center gap-1"><span class="w-2 h-2 bg-loch-teal"></span> CH_01</div>
+<div class="flex items-center gap-1"><span class="w-2 h-2 bg-outline"></span> REFERENCE</div>
+</div>
+</div>
+<div class="flex-1 p-2 relative overflow-hidden" id="histogram-container">
+<div class="absolute inset-2 flex flex-col justify-between pointer-events-none opacity-10">
+<div class="border-t border-on-surface w-full"></div>
+<div class="border-t border-on-surface w-full"></div>
+<div class="border-t border-on-surface w-full"></div>
+<div class="border-t border-on-surface w-full"></div>
+</div>
+<canvas class="w-full h-full" id="histogramCanvas"></canvas>
+</div>
+</div>
+</main>
+</div>
+<!-- Status Bar -->
+<footer class="h-8 bg-surface-container-lowest border-t border-outline-variant flex items-center px-margin justify-between z-50">
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2">
+<span class="font-label-caps text-[10px] text-on-surface-variant">SYSTEM STATUS:</span>
+<span class="font-label-caps text-[10px] text-bioluminescent bg-loch-teal/10 px-2 border border-loch-teal/20">COOPERATIVE</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-label-caps text-[10px] text-on-surface-variant">TEMP:</span>
+<span class="font-data-md text-[12px] text-bioluminescent">-20.0°C</span>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2">
+<span class="font-label-caps text-[10px] text-on-surface-variant">HV STATUS:</span>
+<span class="font-label-caps text-[10px] text-on-error-container bg-error-container/20 px-2 border border-error-container animate-pulse-red">ARMED</span>
+</div>
+<div class="flex items-center gap-2 border-l border-outline-variant pl-6">
+<span class="font-label-caps text-[10px] text-on-surface-variant">UPTIME:</span>
+<span class="font-data-md text-[12px] text-on-surface" id="uptime-clock">02:14:55:03</span>
+</div>
+</div>
+</footer>
+<script>
+        const photonCanvas = document.getElementById('photonCanvas');
+        const pCtx = photonCanvas.getContext('2d');
+        let width, height;
+
+        function resize() {
+            width = photonCanvas.width = photonCanvas.offsetWidth;
+            height = photonCanvas.height = photonCanvas.offsetHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let photons = [];
+        const MAX_PHOTONS = 200;
+
+        function animatePhotons() {
+            pCtx.fillStyle = 'rgba(14, 20, 25, 0.3)'; 
+            pCtx.fillRect(0, 0, width, height);
+
+            if (Math.random() > 0.3) {
+                photons.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    alpha: 1,
+                    size: Math.random() * 2 + 1
+                });
+            }
+
+            pCtx.shadowBlur = 10;
+            pCtx.shadowColor = '#006d77';
+            pCtx.fillStyle = '#83c5be';
+
+            for (let i = photons.length - 1; i >= 0; i--) {
+                const p = photons[i];
+                pCtx.globalAlpha = p.alpha;
+                pCtx.fillRect(p.x, p.y, p.size, p.size);
+                p.alpha -= 0.05;
+                if (p.alpha <= 0) photons.splice(i, 1);
+            }
+            pCtx.globalAlpha = 1;
+            pCtx.shadowBlur = 0;
+
+            requestAnimationFrame(animatePhotons);
+        }
+        animatePhotons();
+
+        const histCanvas = document.getElementById('histogramCanvas');
+        const hCtx = histCanvas.getContext('2d');
+        let histWidth, histHeight;
+
+        function resizeHist() {
+            histWidth = histCanvas.width = histCanvas.offsetWidth;
+            histHeight = histCanvas.height = histCanvas.offsetHeight;
+        }
+        window.addEventListener('resize', resizeHist);
+        resizeHist();
+
+        let dataPoints = new Array(60).fill(0).map(() => Math.random() * 80 + 10);
+
+        function animateHistogram() {
+            hCtx.clearRect(0, 0, histWidth, histHeight);
+            
+            const barWidth = histWidth / dataPoints.length;
+            
+            dataPoints.shift();
+            dataPoints.push(Math.random() * 40 + (Math.sin(Date.now()/500) * 30 + 40));
+
+            dataPoints.forEach((val, i) => {
+                const h = (val / 100) * histHeight;
+                hCtx.fillStyle = '#006d77';
+                hCtx.fillRect(i * barWidth, histHeight - h, barWidth - 1, h);
+                hCtx.fillStyle = '#83c5be';
+                hCtx.fillRect(i * barWidth, histHeight - h, barWidth - 1, 2);
+            });
+
+            setTimeout(() => requestAnimationFrame(animateHistogram), 50);
+        }
+        animateHistogram();
+
+        const startInput = document.getElementById('gate-start');
+        const endInput = document.getElementById('gate-end');
+        const gateVisual = document.getElementById('gate-visual');
+
+        function updateGate() {
+            const start = parseInt(startInput.value);
+            const end = parseInt(endInput.value);
+            gateVisual.style.left = start + '%';
+            gateVisual.style.right = (100 - end) + '%';
+        }
+
+        startInput.addEventListener('input', updateGate);
+        endInput.addEventListener('input', updateGate);
+        updateGate();
+
+        setInterval(() => {
+            document.getElementById('uptime-clock').innerText = "02:14:55:" + (Math.floor(Math.random()*99)).toString().padStart(2, '0');
+        }, 100);
+    </script>
+</body></html>
