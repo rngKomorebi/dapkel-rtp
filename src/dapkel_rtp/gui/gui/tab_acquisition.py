@@ -50,7 +50,22 @@ class SettingsDialog(QDialog):
         ("memory_select0",    "memory_select0"),
         ("memory_select1",    "memory_select1"),
         ("debug_last_row",    "debug_last_row"),
+        ("external_frame_trigger", "external_frame_trigger  (wait for SMA sync trigger)"),
     ]
+
+    # Extra guidance for bits whose behavior isn't obvious from the label
+    # alone; shown as a tooltip on that checkbox specifically.
+    _TOOLTIPS = {
+        "external_frame_trigger": (
+            "When checked: each frame's acquisition starts on an external\n"
+            "trigger pulse (SMA input) instead of free-running. With N\n"
+            "frames set, the acquisition only completes once you've supplied\n"
+            "N trigger pulses -- each pulse must be spaced >9 µs apart from\n"
+            "the last (to let one frame's readout finish before the next\n"
+            "trigger arrives). Exposure time itself can be set as low as 5 ns.\n"
+            "When unchecked: free-running as before, same ~5 ns exposure floor."
+        ),
+    }
 
     def __init__(self, chip_state: dict, exe_dir: str, parent=None):
         super().__init__(parent)
@@ -67,6 +82,8 @@ class SettingsDialog(QDialog):
             cb = QCheckBox(label)
             cb.setChecked(bool(chip_state.get(key, False)))
             cb.toggled.connect(self._refresh_label)
+            if key in self._TOOLTIPS:
+                cb.setToolTip(self._TOOLTIPS[key])
             self._cbs[key] = cb
             chip_lay.addWidget(cb)
 
@@ -109,10 +126,12 @@ class SettingsDialog(QDialog):
     def _compute_config(self) -> int:
         c = self._cbs
         return (
-            int(c["debug_last_row"].isChecked()) << 6
-            | int(c["memory_select1"].isChecked()) << 5
-            | int(c["memory_select0"].isChecked()) << 4
-            | int(c["single_shot_noise"].isChecked()) << 3
+            int(c["external_frame_trigger"].isChecked()) << 8
+            | int(c["debug_last_row"].isChecked()) << 7
+            | int(c["memory_select1"].isChecked()) << 6
+            | int(c["memory_select0"].isChecked()) << 5
+            | int(c["single_shot_noise"].isChecked()) << 4
+            # bit 3 reserved/unused
             | int(c["chip_artif_rdout"].isChecked()) << 2
             | int(c["chip_timing"].isChecked()) << 1
             | int(c["chip_debug"].isChecked())
@@ -150,10 +169,16 @@ class AcquisitionTab(QWidget):
             "memory_select0": False,
             "memory_select1": False,
             "debug_last_row": False,
+            "external_frame_trigger": False,
         }
         self._exe_dir = functions_dir()
+        self._pwr_mgt_program: str | None = None  # program currently loaded on the FPGA
+        self._pwr_mgt_pending_program: str | None = None
         self._build_ui()
         self._populate_programs()
+        # Connected after the initial population settles, so app startup
+        # doesn't auto-trigger a Power Mgt run before the user does anything.
+        self.program_combo.currentIndexChanged.connect(self._on_program_change)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -210,8 +235,11 @@ class AcquisitionTab(QWidget):
         self.exp_spin.setSuffix(" µs")
         self.exp_spin.setFixedWidth(110)
         self.exp_spin.setToolTip(
-            "Extra exposure beyond free-running base.\n"
-            "0 µs → 9 µs frame period  |  10 µs → 19 µs frame period"
+            "Exposure time, set directly: whatever you enter here is the\n"
+            "actual exposure achieved, e.g. 0.2 µs → 200 ns exposure.\n"
+            "Readout takes the rest of the fixed ~9 µs frame period:\n"
+            "readout = 9 µs - exposure. (Requires external_frame_trigger\n"
+            "OFF in Settings -- that's a separate SMA hardware-sync feature.)"
         )
         params.addWidget(self.exp_spin)
 
@@ -222,6 +250,21 @@ class AcquisitionTab(QWidget):
             "Output filename prefix (e.g. 'data' → data1.bin, data2.bin, …)"
         )
         params.addWidget(self.filename_edit)
+
+        start_num_label = QLabel("Start#:")
+        start_num_label.setMinimumWidth(start_num_label.sizeHint().width())
+        params.addWidget(start_num_label)
+        self.start_num_spin = QSpinBox()
+        self.start_num_spin.setRange(1, 1_000_000)
+        self.start_num_spin.setValue(1)
+        self.start_num_spin.setFixedWidth(80)
+        self.start_num_spin.setToolTip(
+            "Number to start the filename suffix from. Leave at 1 for a\n"
+            "fresh run, or set to one past your last file (e.g. 535 if you\n"
+            "stopped at data_ORT534.bin) to continue an interrupted run\n"
+            "without overwriting existing files."
+        )
+        params.addWidget(self.start_num_spin)
 
         params.addStretch()
 
@@ -299,6 +342,25 @@ class AcquisitionTab(QWidget):
             self._chip_state = dlg.chip_state()
             self._exe_dir = dlg.exe_dir()
 
+    def _on_program_change(self, _idx: int):
+        """Auto-run Power Mgt whenever the selected program actually
+        changes, since the FPGA must be reprogrammed each time; Power Mgt
+        is no longer something you have to remember to click first."""
+        if self._worker is not None and self._worker.isRunning():
+            return  # acquisition in progress; ignore
+        if self._pwr_worker is not None and self._pwr_worker.isRunning():
+            return  # a Power Mgt run is already in flight
+
+        program_path = self.program_combo.currentData()
+        if program_path is None:
+            return
+
+        if program_path == self._pwr_mgt_program:
+            self.run_btn.setEnabled(True)
+            self.run_btn.setToolTip("")
+        else:
+            self._run_pwr_mgt()
+
     def _run_pwr_mgt(self):
         program_path = self.program_combo.currentData()
         if not program_path or not os.path.isfile(program_path):
@@ -307,9 +369,11 @@ class AcquisitionTab(QWidget):
 
         self.pwr_btn.setEnabled(False)
         self.run_btn.setEnabled(False)
+        self.program_combo.setEnabled(False)
         self.log_edit.clear()
         self._log("--- Power management initialisation ---")
 
+        self._pwr_mgt_pending_program = program_path
         self._pwr_worker = PowerMgtWorker(self._exe_dir, program_path, params_camera_dir())
         self._pwr_worker.log.connect(self._log)
         self._pwr_worker.finished.connect(self._on_pwr_mgt_finished)
@@ -317,9 +381,10 @@ class AcquisitionTab(QWidget):
 
     def _on_pwr_mgt_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
+        self.program_combo.setEnabled(True)
         if success:
-            self.run_btn.setEnabled(True)
-            self.run_btn.setToolTip("")
+            self._pwr_mgt_program = self._pwr_mgt_pending_program
+            self._on_program_change(self.program_combo.currentIndex())
         self._log(("✓ " if success else "✗ ") + msg)
         self._log("-" * 60)
 
@@ -335,10 +400,12 @@ class AcquisitionTab(QWidget):
 
         s = self._chip_state
         chip_config = (
-            int(s["debug_last_row"]) << 6
-            | int(s["memory_select1"]) << 5
-            | int(s["memory_select0"]) << 4
-            | int(s["single_shot_noise"]) << 3
+            int(s["external_frame_trigger"]) << 8
+            | int(s["debug_last_row"]) << 7
+            | int(s["memory_select1"]) << 6
+            | int(s["memory_select0"]) << 5
+            | int(s["single_shot_noise"]) << 4
+            # bit 3 reserved/unused
             | int(s["chip_artif_rdout"]) << 2
             | int(s["chip_timing"]) << 1
             | int(s["chip_debug"])
@@ -355,8 +422,11 @@ class AcquisitionTab(QWidget):
             "folder": self.folder_edit.text(),
             "filename": self.filename_edit.text() or "data",
             "program_tag": program_tag,
+            "start_index": self.start_num_spin.value(),
         }
 
+        self.pwr_btn.setEnabled(False)
+        self.program_combo.setEnabled(False)
         self.run_btn.setEnabled(False)
         self.abort_btn.setEnabled(True)
         self.progress_bar.setValue(0)
@@ -369,6 +439,11 @@ class AcquisitionTab(QWidget):
         self._log(f"Output : {params['folder']}")
         self._log(
             f"Program: {os.path.basename(program_path)}  (tag={program_tag})"
+        )
+        self._log(
+            f"Files  : {params['filename']}_{program_tag}{params['start_index']}"
+            f".bin .. {params['filename']}_{program_tag}"
+            f"{params['start_index'] + params['nacq'] - 1}.bin"
         )
         self._log("-" * 60)
 
@@ -384,6 +459,8 @@ class AcquisitionTab(QWidget):
             self._log("Abort requested…")
 
     def _on_finished(self, success: bool, msg: str):
+        self.pwr_btn.setEnabled(True)
+        self.program_combo.setEnabled(True)
         self.run_btn.setEnabled(True)
         self.abort_btn.setEnabled(False)
         self._log("-" * 60)

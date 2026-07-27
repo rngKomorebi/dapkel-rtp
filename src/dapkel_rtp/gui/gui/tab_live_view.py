@@ -52,6 +52,7 @@ class LiveViewTab(QWidget):
             "memory_select0": False,
             "memory_select1": False,
             "debug_last_row": False,
+            "external_frame_trigger": False,
         }
         self._exe_dir = functions_dir()
         self._frame_count = 0
@@ -67,10 +68,15 @@ class LiveViewTab(QWidget):
         self._plot_canvas_size = None
         self._pwr_mgt_program: str | None = None  # program currently loaded on the FPGA
         self._pwr_mgt_pending_program: str | None = None
+        self._startup_complete = False
         self._build_ui()
         self._populate_programs()
         self.program_combo.currentIndexChanged.connect(self._on_program_change)
+        # _on_mode_change's 32x32 branch calls _on_program_change, which
+        # would otherwise auto-fire a real Power Mgt run during widget
+        # construction, before the user has done anything.
         self._on_mode_change(self.mode_combo.currentIndex())
+        self._startup_complete = True
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -129,6 +135,13 @@ class LiveViewTab(QWidget):
         self.exp_spin.setValue(20.0)
         self.exp_spin.setSuffix(" µs")
         self.exp_spin.setFixedWidth(110)
+        self.exp_spin.setToolTip(
+            "Exposure time, set directly: whatever you enter here is the\n"
+            "actual exposure achieved, e.g. 0.2 µs → 200 ns exposure.\n"
+            "Readout takes the rest of the fixed ~9 µs frame period:\n"
+            "readout = 9 µs - exposure. (Requires external_frame_trigger\n"
+            "OFF in Settings -- that's a separate SMA hardware-sync feature.)"
+        )
         params.addWidget(self.exp_spin)
 
         self.nframes_spin.valueChanged.connect(self._on_live_param_change)
@@ -244,21 +257,29 @@ class LiveViewTab(QWidget):
         )
 
     def _on_program_change(self, _idx: int):
-        """Keep Start gated on whether the FPGA is already programmed for
-        the currently-selected program, so Power Mgt is only required once
-        per program (or after switching programs), not before every run."""
+        """Auto-run Power Mgt whenever the selected program actually
+        changes, since the FPGA must be reprogrammed each time -- Power Mgt
+        is no longer something you have to remember to click first. Start
+        stays gated on whether the FPGA is already programmed for the
+        current selection, so an unchanged program doesn't reprogram."""
+        if not self._startup_complete:
+            return  # still constructing; don't auto-fire before ready
         if self.stop_btn.isEnabled():
             return  # live view currently running; state will settle on stop
         if self.mode_combo.currentIndex() == 1:
             return  # 64x64 mode manages its own programming per quadrant
+        if self._pwr_worker is not None and self._pwr_worker.isRunning():
+            return  # a Power Mgt run is already in flight
 
         current = self.program_combo.currentData()
-        if current is not None and current == self._pwr_mgt_program:
+        if current is None:
+            return
+
+        if current == self._pwr_mgt_program:
             self.start_btn.setEnabled(True)
             self.start_btn.setToolTip("")
         else:
-            self.start_btn.setEnabled(False)
-            self.start_btn.setToolTip("Run Power Mgt first to activate acquisition")
+            self._run_pwr_mgt()
 
     def _browse_folder(self):
         start = self.folder_edit.text() or functions_dir()
@@ -282,6 +303,7 @@ class LiveViewTab(QWidget):
 
         self.pwr_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
+        self.program_combo.setEnabled(False)
         self.status_label.setText("Initialising FPGA…")
 
         self._pwr_mgt_pending_program = program_path
@@ -293,6 +315,7 @@ class LiveViewTab(QWidget):
 
     def _on_pwr_mgt_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
+        self.program_combo.setEnabled(True)
         if success:
             self._pwr_mgt_program = self._pwr_mgt_pending_program
             # Live View only re-enables Start once mode/program still match
@@ -308,10 +331,12 @@ class LiveViewTab(QWidget):
 
         s = self._chip_state
         chip_config = (
-            int(s["debug_last_row"]) << 6
-            | int(s["memory_select1"]) << 5
-            | int(s["memory_select0"]) << 4
-            | int(s["single_shot_noise"]) << 3
+            int(s["external_frame_trigger"]) << 8
+            | int(s["debug_last_row"]) << 7
+            | int(s["memory_select1"]) << 6
+            | int(s["memory_select0"]) << 5
+            | int(s["single_shot_noise"]) << 4
+            # bit 3 reserved/unused
             | int(s["chip_artif_rdout"]) << 2
             | int(s["chip_timing"]) << 1
             | int(s["chip_debug"])

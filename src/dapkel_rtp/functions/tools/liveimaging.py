@@ -37,6 +37,10 @@ except ImportError:
 # Parameters
 # =============================================================================
 CLK_PERIOD = 5e-9  # seconds per clock tick (200 MHz)
+# Exposure time, set directly: whatever value you set here is the actual
+# exposure achieved. Readout takes the rest of the fixed ~9 us frame
+# period: readout = 9 us - exposure. (Requires external_frame_trigger=0
+# below -- that's a separate SMA hardware-sync feature.)
 exp_time = 20e-6  # exposure time in seconds
 exposure_time = round(exp_time / CLK_PERIOD)
 
@@ -52,12 +56,15 @@ single_shot_noise = 0  # 0 = single-shot, 1 = noise
 memory_select0 = 0
 memory_select1 = 0
 debug_last_row = 0
+external_frame_trigger = 0  # 1 = wait for external SMA sync trigger instead (separate feature)
 
 chip_config = (
-    debug_last_row << 6
-    | memory_select1 << 5
-    | memory_select0 << 4
-    | single_shot_noise << 3
+    external_frame_trigger << 8
+    | debug_last_row << 7
+    | memory_select1 << 6
+    | memory_select0 << 5
+    | single_shot_noise << 4
+    # bit 3 reserved/unused
     | chip_artif_rdout << 2
     | chip_timing << 1
     | chip_debug

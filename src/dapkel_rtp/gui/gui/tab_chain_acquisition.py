@@ -124,8 +124,11 @@ class JobBlock(QFrame):
         self.exp_spin.setSuffix(" µs")
         self.exp_spin.setFixedWidth(110)
         self.exp_spin.setToolTip(
-            "Extra exposure beyond free-running base.\n"
-            "0 µs → 9 µs frame period  |  10 µs → 19 µs frame period"
+            "Exposure time, set directly: whatever you enter here is the\n"
+            "actual exposure achieved, e.g. 0.2 µs → 200 ns exposure.\n"
+            "Readout takes the rest of the fixed ~9 µs frame period:\n"
+            "readout = 9 µs - exposure. (Requires external_frame_trigger\n"
+            "OFF in Settings -- that's a separate SMA hardware-sync feature.)"
         )
         lay.addWidget(self.exp_spin)
 
@@ -141,6 +144,21 @@ class JobBlock(QFrame):
         self.prefix_edit.setFixedWidth(80)
         self.prefix_edit.setToolTip("Filename prefix for this job (e.g. 'data' → data_S0C1.bin)")
         lay.addWidget(self.prefix_edit)
+
+        start_num_label = QLabel("Start#:")
+        start_num_label.setMinimumWidth(start_num_label.sizeHint().width())
+        lay.addWidget(start_num_label)
+        self.start_num_spin = QSpinBox()
+        self.start_num_spin.setRange(1, 1_000_000)
+        self.start_num_spin.setValue(1)
+        self.start_num_spin.setFixedWidth(70)
+        self.start_num_spin.setToolTip(
+            "Number to start this job's filename suffix from. Leave at 1\n"
+            "for a fresh run, or set to one past your last file (e.g. 535\n"
+            "if you stopped at data_S0C534.bin) to continue without\n"
+            "overwriting existing files."
+        )
+        lay.addWidget(self.start_num_spin)
 
         lay.addStretch()
 
@@ -174,6 +192,7 @@ class JobBlock(QFrame):
             "exp_time_us": self.exp_spin.value(),
             "nacq": self.nacq_spin.value(),
             "prefix": self.prefix_edit.text() or "data",
+            "start_index": self.start_num_spin.value(),
         }
 
 
@@ -186,6 +205,8 @@ class ChainAcquisitionTab(QWidget):
         super().__init__()
         self._worker: AcquisitionWorker | None = None
         self._pwr_worker: PowerMgtWorker | None = None
+        self._pwr_mgt_program: str | None = None  # program currently loaded on the FPGA
+        self._pwr_mgt_pending_program: str | None = None
         self._chip_state: dict = {
             "chip_debug": False,
             "chip_timing": True,
@@ -195,6 +216,7 @@ class ChainAcquisitionTab(QWidget):
             "memory_select0": False,
             "memory_select1": False,
             "debug_last_row": False,
+            "external_frame_trigger": False,
         }
         self._exe_dir = functions_dir()
         self._programs: list = []          # [(display_name, full_path), …]
@@ -260,7 +282,7 @@ class ChainAcquisitionTab(QWidget):
         self._add_btn = QPushButton("+  Add Job")
         self._add_btn.setFixedWidth(110)
         self._add_btn.setFixedHeight(30)
-        self._add_btn.clicked.connect(self.add_job)
+        self._add_btn.clicked.connect(self._on_add_job_clicked)
         add_row.addWidget(self._add_btn)
         add_row.addStretch()
         root.addLayout(add_row)
@@ -320,6 +342,18 @@ class ChainAcquisitionTab(QWidget):
         self.folder_edit.setText(os.path.join(functions_dir(), "data"))
         block = self.add_job()
         block.select_program_by_tag("S3C")
+        # Connected only after the default selection settles, so app
+        # startup doesn't auto-trigger a Power Mgt run before the user
+        # does anything.
+        block.program_combo.currentIndexChanged.connect(
+            lambda _idx, b=block: self._on_job_program_change(b)
+        )
+
+    def _on_add_job_clicked(self):
+        block = self.add_job()
+        block.program_combo.currentIndexChanged.connect(
+            lambda _idx, b=block: self._on_job_program_change(b)
+        )
 
     # ------------------------------------------------------------------
     # Job block management
@@ -330,7 +364,10 @@ class ChainAcquisitionTab(QWidget):
             b.set_number(i)
 
     def add_job(self) -> JobBlock:
-        """Create and append a new job block; return it."""
+        """Create and append a new job block; return it. Callers are
+        responsible for wiring up program-change auto-triggering (see
+        _init_default_job / _on_add_job_clicked) since only job #1 should
+        gate Power Mgt / Run Chain."""
         block = JobBlock(self._programs, self._jobs_container)
         block.remove_requested.connect(self._remove_job)
         self._jobs_layout.insertWidget(
@@ -367,6 +404,28 @@ class ChainAcquisitionTab(QWidget):
     # Power management
     # ------------------------------------------------------------------
 
+    def _on_job_program_change(self, block: JobBlock):
+        """Auto-run Power Mgt whenever job #1's selected program actually
+        changes, since the FPGA must be reprogrammed each time. Only job #1
+        gates Power Mgt / Run Chain readiness; jobs 2+ are reprogrammed
+        automatically as needed by the chain executor (see _start_next_job)."""
+        if not self._job_blocks or self._job_blocks[0] is not block:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return  # chain actively running; ignore
+        if self._pwr_worker is not None and self._pwr_worker.isRunning():
+            return  # a Power Mgt run is already in flight
+
+        program_path = block.program_combo.currentData()
+        if program_path is None:
+            return  # category header, not a real selection
+
+        if program_path == self._pwr_mgt_program:
+            self.run_btn.setEnabled(True)
+            self.run_btn.setToolTip("")
+        else:
+            self._run_pwr_mgt()
+
     def _run_pwr_mgt(self):
         if not self._job_blocks:
             self._log("ERROR: Add at least one job first.")
@@ -378,9 +437,12 @@ class ChainAcquisitionTab(QWidget):
 
         self.pwr_btn.setEnabled(False)
         self.run_btn.setEnabled(False)
+        self._jobs_container.setEnabled(False)
+        self._add_btn.setEnabled(False)
         self.log_edit.clear()
         self._log("--- Power management initialisation ---")
 
+        self._pwr_mgt_pending_program = program_path
         self._pwr_worker = PowerMgtWorker(
             self._exe_dir, program_path, params_camera_dir()
         )
@@ -390,9 +452,12 @@ class ChainAcquisitionTab(QWidget):
 
     def _on_pwr_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
+        self._jobs_container.setEnabled(True)
+        self._add_btn.setEnabled(True)
         if success:
-            self.run_btn.setEnabled(True)
-            self.run_btn.setToolTip("")
+            self._pwr_mgt_program = self._pwr_mgt_pending_program
+            if self._job_blocks:
+                self._on_job_program_change(self._job_blocks[0])
         self._log(("✓ " if success else "✗ ") + msg)
         self._log("-" * 60)
 
@@ -427,8 +492,10 @@ class ChainAcquisitionTab(QWidget):
         self.chain_bar.setRange(0, self._total_jobs * 100)
         self.chain_bar.setValue(0)
         self.chain_bar.setFormat("Starting…")
+        self.pwr_btn.setEnabled(False)
         self.run_btn.setEnabled(False)
         self._add_btn.setEnabled(False)
+        self._jobs_container.setEnabled(False)
         self.abort_btn.setEnabled(True)
         self.log_edit.clear()
         self._log(f"Chain: {self._total_jobs} jobs  →  {folder}")
@@ -438,29 +505,65 @@ class ChainAcquisitionTab(QWidget):
     def _chip_config_int(self) -> int:
         s = self._chip_state
         return (
-            int(s["debug_last_row"]) << 6
-            | int(s["memory_select1"]) << 5
-            | int(s["memory_select0"]) << 4
-            | int(s["single_shot_noise"]) << 3
+            int(s["external_frame_trigger"]) << 8
+            | int(s["debug_last_row"]) << 7
+            | int(s["memory_select1"]) << 6
+            | int(s["memory_select0"]) << 5
+            | int(s["single_shot_noise"]) << 4
+            # bit 3 reserved/unused
             | int(s["chip_artif_rdout"]) << 2
             | int(s["chip_timing"]) << 1
             | int(s["chip_debug"])
         )
 
     def _start_next_job(self):
+        """Peek at the next queued job; reprogram the FPGA first if it
+        needs a different program than what's currently loaded (which
+        happens whenever consecutive jobs use different SPAD programs --
+        the FPGA has to be reprogrammed every time the program changes,
+        not just once at the start of the chain)."""
         if not self._pending_jobs:
             self._on_chain_done(True)
             return
 
+        jp = self._pending_jobs[0]
+        if jp["program_path"] != self._pwr_mgt_program:
+            self._log(f"\nProgramming FPGA for {jp['program_tag']}…")
+            self._pwr_worker = PowerMgtWorker(
+                self._exe_dir, jp["program_path"], params_camera_dir()
+            )
+            self._pwr_worker.log.connect(self._log)
+            self._pwr_worker.finished.connect(self._on_chain_pwr_mgt_finished)
+            self._pwr_worker.start()
+            return
+
+        self._run_current_job()
+
+    def _on_chain_pwr_mgt_finished(self, success: bool, msg: str):
+        self._log(("✓ " if success else "✗ ") + msg)
+        if not self._pending_jobs:
+            return  # aborted while this reprogram was in flight
+        if not success:
+            self._on_chain_done(False)
+            return
+        self._pwr_mgt_program = self._pending_jobs[0]["program_path"]
+        self._run_current_job()
+
+    def _run_current_job(self):
         jp = self._pending_jobs.pop(0)
         job_num = self._completed_jobs + 1
         chip_config = self._chip_config_int()
         exposure_time = round(jp["exp_time_us"] * 1e-6 / CLK_PERIOD)
 
+        last_index = jp["start_index"] + jp["nacq"] - 1
         self._log(
             f"\n[Job {job_num}/{self._total_jobs}]  {jp['program_tag']}"
             f"  —  {jp['nacq']} × {jp['nframes']} frames"
             f"  |  exp={jp['exp_time_us']:.3f} µs"
+        )
+        self._log(
+            f"  Files: {jp['prefix']}_{jp['program_tag']}{jp['start_index']}.bin"
+            f" .. {jp['prefix']}_{jp['program_tag']}{last_index}.bin"
         )
 
         params = {
@@ -472,6 +575,7 @@ class ChainAcquisitionTab(QWidget):
             "folder": self.folder_edit.text(),
             "filename": jp["prefix"],
             "program_tag": jp["program_tag"],
+            "start_index": jp["start_index"],
         }
 
         tag = jp["program_tag"]
@@ -497,8 +601,10 @@ class ChainAcquisitionTab(QWidget):
         self._start_next_job()
 
     def _on_chain_done(self, success: bool):
+        self.pwr_btn.setEnabled(True)
         self.run_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
+        self._jobs_container.setEnabled(True)
         self.abort_btn.setEnabled(False)
         self._log("=" * 60)
         if success:

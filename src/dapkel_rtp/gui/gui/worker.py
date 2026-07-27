@@ -13,6 +13,12 @@ from PyQt5.QtCore import QThread, pyqtSignal
 _NBITS = 17 * (32 * 32) - 1  # 17407
 _CLK_SHIFT = 2400
 
+# Kelpie_v2.exe / Kelpie_v2_pwr_mgt.exe are console-subsystem executables.
+# When this app itself has no console -- the case for the --noconsole
+# PyInstaller build -- Windows would otherwise flash open a brand new
+# console window for each one. Passed to every subprocess.run() call below.
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
 
 def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
     """Synchronous, non-signalling variant of PowerMgtWorker.run() for use
@@ -36,6 +42,7 @@ def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
+            creationflags=_NO_WINDOW,
         )
     except OSError as exc:
         return False, str(exc)
@@ -89,6 +96,7 @@ class PowerMgtWorker(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=self._bitfile_dir,  # exe resolves ./bitfile/Kelpie_top.bit from here
+                creationflags=_NO_WINDOW,
             )
         except OSError as exc:
             self.finished.emit(False, str(exc))
@@ -147,12 +155,13 @@ class AcquisitionWorker(QThread):
         folder_exe = p["folder"].rstrip(os.sep) + os.sep
 
         nacq = p["nacq"]
+        start_index = p.get("start_index", 1)
         for i in range(nacq):
             if self._abort:
                 self.finished.emit(False, "Aborted by user")
                 return
 
-            filename_i = f"{p['filename']}_{p['program_tag']}{i + 1}"
+            filename_i = f"{p['filename']}_{p['program_tag']}{start_index + i}"
             cmd = [
                 exe_path,
                 str(p["chip_config"]),
@@ -168,6 +177,7 @@ class AcquisitionWorker(QThread):
                 capture_output=True,
                 text=True,
                 cwd=p["exe_dir"],
+                creationflags=_NO_WINDOW,
             )
 
             if result.stdout.strip():
@@ -285,6 +295,7 @@ class LiveViewWorker(QThread):
                 capture_output=True,
                 text=True,
                 cwd=p["exe_dir"],
+                creationflags=_NO_WINDOW,
             )
             if self._abort:
                 break
@@ -347,6 +358,7 @@ class LiveViewWorker(QThread):
                     capture_output=True,
                     text=True,
                     cwd=p["exe_dir"],
+                    creationflags=_NO_WINDOW,
                 )
                 if result.returncode != 0:
                     self.error.emit(

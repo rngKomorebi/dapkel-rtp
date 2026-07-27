@@ -17,7 +17,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Parameters
 # =============================================================================
 CLK_PERIOD = 5e-9
-exp_time = 0e-6  #
+# Exposure time, set directly: whatever value you set here is the actual
+# exposure achieved. Readout takes the rest of the fixed ~9 us frame
+# period: readout = 9 us - exposure. (Requires external_frame_trigger=0
+# below -- that's a separate SMA hardware-sync feature.)
+exp_time = 0e-6
 exposure_time = round(exp_time / CLK_PERIOD)
 
 nframes = 10_000  # frames per acquisition (up to ~1.1 million)
@@ -31,12 +35,15 @@ single_shot_noise = 0
 memory_select0 = 0
 memory_select1 = 0
 debug_last_row = 0
+external_frame_trigger = 0  # 1 = wait for external SMA sync trigger instead (separate feature)
 
 chip_config = (
-    debug_last_row << 6
-    | memory_select1 << 5
-    | memory_select0 << 4
-    | single_shot_noise << 3
+    external_frame_trigger << 8
+    | debug_last_row << 7
+    | memory_select1 << 6
+    | memory_select0 << 5
+    | single_shot_noise << 4
+    # bit 3 reserved/unused
     | chip_artif_rdout << 2
     | chip_timing << 1
     | chip_debug

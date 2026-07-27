@@ -28,3 +28,7 @@ Thumbs.db
 
 # Claude Code local session state (not project content)
 .claude/
+
+# Default acquisition/live-view output folders (runtime test data, not source)
+src/dapkel_rtp/functions/helpers/data/
+src/dapkel_rtp/functions/helpers/live/
