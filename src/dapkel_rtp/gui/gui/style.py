@@ -344,6 +344,34 @@ QTextEdit {{
     selection-background-color: {CYAN_DIM};
 }}
 
+/* ── List (file pickers) ─────────────────────────────────────────────── */
+/* Monospaced so the column-aligned rows the Data Quality tab writes stay
+   in columns. */
+QListWidget {{
+    background: {BG_DEEP};
+    border: 1px solid {OUTLINE};
+    border-radius: 2px;
+    color: {TEXT_DIM};
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    font-size: {_mono}px;
+    outline: none;
+}}
+
+QListWidget::item {{
+    padding: 3px 6px;
+    border: none;
+}}
+
+QListWidget::item:hover {{
+    background: {SURFACE_LOW};
+    color: {TEXT};
+}}
+
+QListWidget::item:selected {{
+    background: {CYAN_DIM};
+    color: {CYAN_HI};
+}}
+
 /* ── Scrollbars ──────────────────────────────────────────────────────── */
 QScrollBar:vertical, QScrollBar:horizontal {{
     background: {SURFACE_LOW};
@@ -372,6 +400,19 @@ QLabel {{
     color: {TEXT_DIM};
     background: transparent;
 }}
+
+/* ── Disabled inputs ─────────────────────────────────────────────────── */
+/* Buttons already dim themselves; without this the other input widgets look
+   live while ignoring every click (the Row/Col pixel spin boxes, greyed out
+   whenever the whole array is being pooled). */
+QLineEdit:disabled, QComboBox:disabled,
+QSpinBox:disabled, QDoubleSpinBox:disabled {{
+    background: {SURFACE_LOW};
+    border-color: {OUTLINE};
+    color: {OUTLINE_VAR};
+}}
+
+QLabel:disabled {{ color: {OUTLINE}; }}
 
 /* ── Matplotlib navigation toolbar ──────────────────────────────────── */
 QToolBar {{

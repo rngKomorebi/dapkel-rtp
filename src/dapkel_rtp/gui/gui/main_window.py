@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget
 from .style import apply_qss
 from .tab_acquisition import AcquisitionTab
 from .tab_chain_acquisition import ChainAcquisitionTab
+from .tab_data_quality import DataQualityTab
 from .tab_live_view import LiveViewTab
 
 
@@ -20,9 +21,11 @@ class MainWindow(QMainWindow):
         self._acq_tab = AcquisitionTab()
         self._chain_tab = ChainAcquisitionTab()
         self._live_tab = LiveViewTab()
+        self._dq_tab = DataQualityTab()
         tabs.addTab(self._acq_tab, "Single Acquisition")
         tabs.addTab(self._chain_tab, "Chain Acquisition")
         tabs.addTab(self._live_tab, "Live View")
+        tabs.addTab(self._dq_tab, "Data Quality")
         self.setCentralWidget(tabs)
 
         self._font_timer = QTimer(self)
@@ -47,15 +50,13 @@ class MainWindow(QMainWindow):
             apply_qss(app, fs)
 
     def closeEvent(self, event):
-        for worker in (
-            self._acq_tab._pwr_worker,
-            self._acq_tab._worker,
-            self._chain_tab._pwr_worker,
-            self._chain_tab._worker,
-            self._live_tab._pwr_worker,
-            self._live_tab._worker,
-        ):
-            if worker is not None and worker.isRunning():
-                worker.terminate()
-                worker.wait(2000)  # ms — give it up to 2 s then move on
+        # getattr, because not every tab owns both kinds of worker (the Data
+        # Quality tab touches no hardware, so it has no power-management one).
+        tabs = (self._acq_tab, self._chain_tab, self._live_tab, self._dq_tab)
+        for tab in tabs:
+            for attr in ("_pwr_worker", "_worker"):
+                worker = getattr(tab, attr, None)
+                if worker is not None and worker.isRunning():
+                    worker.terminate()
+                    worker.wait(2000)  # ms — give it up to 2 s then move on
         event.accept()

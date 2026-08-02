@@ -1,8 +1,28 @@
-"""Tab 3 - Live View (continuous single-frame preview).
+"""Tab 3 - Live View (continuous hitmap preview).
 
-Python port of dapkel_rtp/matlab/liveimaging.m: runs Kelpie_v2.exe in a tight
-loop against one constantly-overwritten .bin file and previews only the
-first decoded frame of each acquisition until stopped.
+Runs Kelpie_v2.exe in a tight loop against one constantly-overwritten .bin
+file and previews a *hitmap* of each acquisition until stopped: the frames of
+the acquisition reduced to one per-pixel map, shown as a photon rate.
+
+Everything shown is counted out of the raw data, never modelled:
+
+* every frame the acquisition wrote is reduced over, not sampled at frame 0 —
+  a single 20 µs frame is shot noise, the reduction is the map (see
+  dapkel_rtp.functions.hitmap);
+* which reduction depends on the loaded program: summed photon counts for the
+  ``*C`` programs, frames-with-a-valid-timestamp for the timestamp programs
+  (whose counts field holds timestamp bits and must never be summed);
+* frames that carry no data are dropped, so the map does not dim and brighten
+  with however many idle frames a pass happened to start with;
+* the colour scale spans the full measured range — hot pixels are shown as
+  measured, nothing is clipped or smoothed;
+* the colourbar is a photon rate: cps (counts / exposure) in count mode, Hz
+  (firings / measured frame period) in timestamp mode. When the frame period
+  cannot be measured, the counted map is shown in its own units instead of a
+  rate derived from an assumed period.
+
+The loop keeps acquiring until Stop: a failed acquisition is reported and
+retried, never a reason to end the preview.
 """
 
 import glob
@@ -30,12 +50,32 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from dapkel_rtp.functions.hitmap import (
+    MODE_COUNT,
+    color_limits,
+    mode_for_program,
+    photon_rate,
+)
+
 from ._paths import functions_dir, params_camera_dir, programs_dir
 from .style import BG, OUTLINE, TEXT_DIM
 from .tab_acquisition import SettingsDialog
 from .worker import LiveViewWorker, PowerMgtWorker
 
 CLK_PERIOD = 5e-9  # 200 MHz clock -> 5 ns
+
+# Tooltip for Frames/acq, kept in one place: it is re-set on every mode change.
+_NFRAMES_TIP_32 = (
+    "Frames captured per acquisition; every one of them is counted into\n"
+    "the previewed hitmap.\n"
+    "More frames = smoother map, slower refresh."
+)
+_NFRAMES_TIP_64 = (
+    "Frames captured per quadrant acquisition (x4 per composite frame,\n"
+    "one per S0C/S1C/S2C/S3C); every one of them is counted into the\n"
+    "previewed hitmap.\n"
+    "Lower this for a faster refresh."
+)
 
 
 class LiveViewTab(QWidget):
@@ -66,6 +106,7 @@ class LiveViewTab(QWidget):
         self._plot_cb = None
         self._plot_shape = None
         self._plot_canvas_size = None
+        self._plot_clabel = None  # colourbar units currently drawn
         self._pwr_mgt_program: str | None = None  # program currently loaded on the FPGA
         self._pwr_mgt_pending_program: str | None = None
         self._startup_complete = False
@@ -123,9 +164,7 @@ class LiveViewTab(QWidget):
         self.nframes_spin.setValue(800)
         self.nframes_spin.setSingleStep(100)
         self.nframes_spin.setFixedWidth(90)
-        self.nframes_spin.setToolTip(
-            "Frames captured per acquisition; only the first is previewed."
-        )
+        self.nframes_spin.setToolTip(_NFRAMES_TIP_32)
         params.addWidget(self.nframes_spin)
 
         params.addWidget(QLabel("Exp:"))
@@ -230,19 +269,14 @@ class LiveViewTab(QWidget):
         self.program_combo.setEnabled(not is_64)
         self.pwr_btn.setEnabled(not is_64)
         if is_64:
-            self.nframes_spin.setToolTip(
-                "Frames captured per quadrant acquisition (x4 per composite "
-                "frame, one per S0C/S1C/S2C/S3C); lower this for a faster refresh."
-            )
+            self.nframes_spin.setToolTip(_NFRAMES_TIP_64)
             self.start_btn.setEnabled(True)
             self.start_btn.setToolTip(
                 "Cycles S0C → S1C → S2C → S3C each frame, reprogramming the "
                 "FPGA between quadrants; slower than single-channel mode."
             )
         else:
-            self.nframes_spin.setToolTip(
-                "Frames captured per acquisition; only the first is previewed."
-            )
+            self.nframes_spin.setToolTip(_NFRAMES_TIP_32)
             self._on_program_change(self.program_combo.currentIndex())
 
     def _on_live_param_change(self, _value=None):
@@ -360,6 +394,9 @@ class LiveViewTab(QWidget):
                 "mode_64": True,
                 "quadrant_programs": quadrant_programs,
                 "pwr_cwd": params_camera_dir(),
+                # All four quadrant programs are S*C, hence count mode; read
+                # it off one of them rather than hardcoding the reduction.
+                "hitmap_mode": mode_for_program(quadrant_programs["S0C"]),
             }
         else:
             program_path = self.program_combo.currentData()
@@ -374,6 +411,9 @@ class LiveViewTab(QWidget):
                 "folder": folder,
                 "filename": "live",
                 "mode_64": False,
+                # The program decides the reduction: summing the counts field
+                # of a timestamp program would sum coarse-timestamp bits.
+                "hitmap_mode": mode_for_program(program_path),
             }
 
         self._frame_count = 0
@@ -428,18 +468,42 @@ class LiveViewTab(QWidget):
                 )
         self._last_frame_time = now
 
-    def _rebuild_plot(self, data: np.ndarray, rows: int, cols: int):
+    def _rebuild_plot(
+        self,
+        data: np.ndarray,
+        rows: int,
+        cols: int,
+        clabel: str,
+        clim: tuple[float, float],
+        title: str,
+    ):
         """Full rebuild: new axes/colorbar plus the two-pass centering fix.
         Expensive (two full-figure draws), so this only runs when the image
-        shape or canvas size actually changed, not on every frame."""
+        shape, canvas size or colourbar units actually changed, not on every
+        frame. The title is set *here*, before the layout pass, because it is
+        two lines tall and tight_layout has to reserve room for it."""
         self.figure.clear()
         self.figure.set_tight_layout(True)
         ax = self.figure.add_subplot(111)
-        im = ax.imshow(data, cmap="gray", aspect="equal", origin="lower")
-        cb = self.figure.colorbar(im, ax=ax)
+        im = ax.imshow(
+            data,
+            cmap="gray",
+            aspect="equal",
+            origin="lower",
+            vmin=clim[0],
+            vmax=clim[1],
+        )
+        cb = self.figure.colorbar(im, ax=ax, label=clabel)
         cb.ax.tick_params(colors=TEXT_DIM)
+        cb.ax.yaxis.label.set_color(TEXT_DIM)
         cb.outline.set_edgecolor(OUTLINE)
+        ax.set_title(title, color=TEXT_DIM)
+        ax.set_xlabel("Column", color=TEXT_DIM)
+        ax.set_ylabel("Row", color=TEXT_DIM)
         ax.tick_params(colors=TEXT_DIM)
+        # The dark theme turns the grid on globally; over a hitmap it just
+        # draws lines across the pixels, so keep the image clean.
+        ax.grid(False)
         for spine in ax.spines.values():
             spine.set_edgecolor(OUTLINE)
 
@@ -469,31 +533,100 @@ class LiveViewTab(QWidget):
         self._plot_cb = cb
         self._plot_shape = (rows, cols)
         self._plot_canvas_size = (self.canvas.width(), self.canvas.height())
+        self._plot_clabel = clabel
 
-    def _on_frame(self, photon_counts: np.ndarray):
+    def _on_frame(self, payload: dict):
+        """Render one accumulated hitmap emitted by the worker.
+
+        ``payload`` carries the reduced map plus what is needed to normalise
+        it: the reduction mode, the number of frames that carried data, and
+        the live seconds per frame. The map is shown as a photon rate
+        whenever that live time is known — the same quantity the offline
+        'hitmap_analysis' rate map plots.
+        """
         self._frame_count += 1
         self._update_fps()
-        rows, cols = photon_counts.shape
-        data = np.fliplr(photon_counts)
+
+        hitmap = payload["hitmap"]
+        frames = payload["frames"]  # a number, or per-pixel in 64x64 mode
+        frames_req = payload["frames_requested"]
+        mode = payload["mode"]
+        rows, cols = hitmap.shape
+
+        # Rate when the live time is known, the counted map otherwise (a zero
+        # exposure, or no measured frame period) — a rate is never formed from
+        # an assumed time. In timestamp mode the map is an occupancy, in Hz.
+        raw_label = "photon counts" if mode == MODE_COUNT else "frames fired"
+        rate = photon_rate(hitmap, frames, payload["live_per_frame"])
+        if rate is None:
+            data, clabel, unit = hitmap, raw_label, ""
+        else:
+            data = rate
+            clabel = f"photon rate [{payload['unit']}]"
+            unit = f" {payload['unit']}"
+
+        # Full measured range: every pixel is drawn as counted, hot ones
+        # included. Nothing is clipped and the scale is not carried over
+        # between refreshes.
+        clim = color_limits(data)
         canvas_size = (self.canvas.width(), self.canvas.height())
+
+        median = float(np.median(data))
+        peak = float(data.max())
+        frames_txt = self._frames_text(frames, frames_req)
+        # The colourbar spans the full range, so it already shows the scale --
+        # no need to restate it here (and a long second line would run into
+        # the colourbar's exponent label).
+        title = (
+            f"Live hitmap #{self._frame_count}  {rows}×{cols}   "
+            f"{mode} mode   ({self._fps:.1f} fps)\n"
+            f"{frames_txt}  ·  median {median:.3g}{unit}  ·  "
+            f"max {peak:.3g}{unit}"
+        )
 
         needs_rebuild = (
             self._plot_im is None
             or self._plot_shape != (rows, cols)
             or self._plot_canvas_size != canvas_size
+            or self._plot_clabel != clabel
         )
         if needs_rebuild:
-            self._rebuild_plot(data, rows, cols)
+            self._rebuild_plot(data, rows, cols, clabel, clim, title)
         else:
             self._plot_im.set_data(data)
-            self._plot_im.autoscale()
-
-        self._plot_ax.set_title(
-            f"Live frame #{self._frame_count}  {rows}x{cols}   ({self._fps:.1f} fps)",
-            color=TEXT_DIM,
-        )
+            self._plot_im.set_clim(*clim)
+            self._plot_ax.set_title(title, color=TEXT_DIM)
         self.canvas.draw_idle()
 
-        self.status_label.setText(
-            f"Live, frame #{self._frame_count}, {self._fps:.1f} fps"
+        if not np.any(np.asarray(frames) > 0):
+            self.status_label.setText(
+                f"⚠  hitmap #{self._frame_count}: no frame carried data "
+                f"({payload['frames_read']} read) — chip idle?"
+            )
+            return
+
+        read = payload["frames_read"]
+        status = (
+            f"Live, hitmap #{self._frame_count}, {self._fps:.1f} fps, "
+            f"{frames_txt}, {payload['live_source']}, "
+            f"median {median:.3g}{unit}, max {peak:.3g}{unit}"
         )
+        if read < frames_req:
+            status += f"  [only {read} frames in the file]"
+        self.status_label.setText(status)
+
+    @staticmethod
+    def _frames_text(frames, frames_req: int) -> str:
+        """Describe how many frames carried data, per quadrant if they differ.
+
+        In 64x64 mode ``frames`` is a per-pixel array because each quadrant is
+        its own acquisition; report the spread rather than a single number that
+        would not be true of the whole map.
+        """
+        arr = np.asarray(frames, dtype=np.float64)
+        if arr.ndim == 0:
+            return f"{int(arr)}/{frames_req} frames with data"
+        lo, hi = int(arr.min()), int(arr.max())
+        if lo == hi:
+            return f"{lo}/{frames_req} frames with data"
+        return f"{lo}–{hi}/{frames_req} frames with data (per quadrant)"

@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -18,6 +19,34 @@ _CLK_SHIFT = 2400
 # PyInstaller build -- Windows would otherwise flash open a brand new
 # console window for each one. Passed to every subprocess.run() call below.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
+CLK_PERIOD = 5e-9  # 200 MHz clock -> 5 ns per exposure tick
+
+# The live view keeps running until the user stops it. A pass can fail for
+# reasons that are over by the next one -- the exe exiting non-zero, a 0-byte
+# or short .bin (observed after an interrupted run), a decode error -- so a
+# failed pass is reported and retried, never a reason to end the preview.
+# Only this short pause is inserted, so a persistently failing exe cannot spin
+# the loop at full speed.
+_RETRY_PAUSE_S = 0.3
+
+
+def _truncate_bin(filepath: str) -> None:
+    """Empty a live-view '.bin' before the acquisition overwrites it.
+
+    The '.bin' is a fixed-size DDR3 dump, so a pass that writes fewer frames
+    than the one before it would otherwise leave the previous acquisition's
+    frames sitting in the tail, where they would be accumulated as if they
+    were current -- the beam having moved in between, that shows up as blobs
+    jumping around or doubling. Starting from an empty file makes anything
+    this pass did not write either absent or zero, both of which the hitmap
+    reduction detects and drops.
+    """
+    try:
+        with open(filepath, "wb"):
+            pass
+    except OSError:
+        pass  # the exe creates the file itself; nothing to clear
 
 
 def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
@@ -204,25 +233,39 @@ class AcquisitionWorker(QThread):
 
 
 class LiveViewWorker(QThread):
-    """Continuously runs Kelpie_v2.exe and previews the first decoded frame
-    of each acquisition.
+    """Continuously runs Kelpie_v2.exe and previews a hitmap of each
+    acquisition.
+
+    Each pass emits an accumulated *hitmap* reduced over the frames of the
+    acquisition — the same reduction dapkel's ``hitmap_analysis`` performs
+    offline — not a single decoded frame. The frames are captured either
+    way, and reducing over them is what makes the preview reproduce the
+    offline hitmaps instead of a shot-noise-dominated snapshot.
+
+    Which reduction depends on the loaded program: photon counts are summed
+    for the ``*C`` programs, frames-with-a-valid-timestamp are counted for
+    the timestamp programs (where the counts field holds timestamp bits and
+    must not be summed). Frames that carry no data are dropped. Both live in
+    dapkel_rtp.functions.hitmap.
 
     Two modes:
 
-    * Single-channel (32x32): python port of the acquire-decode-display
-      loop in dapkel_rtp/matlab/liveimaging.m (lines 51-71): each pass
-      reacquires ``nframes`` frames into one constantly-overwritten .bin
-      file and decodes only frame 0 for the live preview, since the loop
-      itself supplies the frame rate.
+    * Single-channel (32x32): each pass reacquires ``nframes`` frames into
+      one constantly-overwritten .bin file and accumulates them into a
+      32x32 hitmap.
     * Full-array (64x64): cycles through the four quadrant programs
       (S0C/S1C/S2C/S3C), reprogramming the FPGA before each quadrant's
       acquisition (required because a quadrant is only exposed on the
       DDR3 bus while its program is loaded) and stitching the four
-      32x32 results into one 64x64 frame using the same interleave
-      pattern as the DCR Hitmap tab's 64x64 assembly.
+      accumulated 32x32 hitmaps into one 64x64 map using the same
+      interleave pattern as the DCR Hitmap tab's 64x64 assembly.
     """
 
-    # 32x32 ndarray for single-channel mode, 64x64 for full-array mode
+    # dict payload: {"hitmap": (32,32)/(64,64) accumulated counts or
+    # occupancy, "frames": frames that carried data and were accumulated,
+    # "frames_read": frames read, "frames_requested": frames asked for,
+    # "mode": hitmap.MODE_*, "live_per_frame": live seconds per frame or
+    # None, "unit": rate unit, "live_source": where the live time came from}
     frame = pyqtSignal(object)
     stage = pyqtSignal(str)  # progress text within one composite frame
     error = pyqtSignal(str)
@@ -244,18 +287,28 @@ class LiveViewWorker(QThread):
         self._abort = True
 
     def run(self):
+        # Whatever happens, 'finished' has to be emitted: if this thread died
+        # on an unhandled exception the tab would sit there with Stop enabled,
+        # no frames arriving and no way back -- which looks exactly like the
+        # acquisition having stopped for no reason.
+        try:
+            self._run()
+        except BaseException as exc:  # noqa: BLE001 - last-resort reporter
+            self.error.emit(f"Live view stopped on an internal error: {exc!r}")
+        finally:
+            self.finished.emit()
+
+    def _run(self):
         p = self.params
         exe_path = os.path.join(p["exe_dir"], "Kelpie_v2.exe")
         if not os.path.isfile(exe_path):
             self.error.emit(f"Kelpie_v2.exe not found at: {exe_path}")
-            self.finished.emit()
             return
 
         try:
             os.makedirs(p["folder"], exist_ok=True)
         except OSError as exc:
             self.error.emit(f"Cannot create output folder: {exc}")
-            self.finished.emit()
             return
 
         if p["mode_64"]:
@@ -263,71 +316,137 @@ class LiveViewWorker(QThread):
         else:
             self._run_32(exe_path)
 
-        self.finished.emit()
+    def _retry_pause(self):
+        """Wait briefly after a failed pass, still responsive to Stop."""
+        deadline = time.monotonic() + _RETRY_PAUSE_S
+        while not self._abort and time.monotonic() < deadline:
+            time.sleep(0.05)
 
     # ------------------------------------------------------------------
     # Single-channel (32x32) loop
     # ------------------------------------------------------------------
 
     def _run_32(self, exe_path: str):
-        from dapkel_rtp.functions.unpack import unpack_kelpie_binary_data
+        from dapkel_rtp.functions.hitmap import (
+            accumulate_hitmap,
+            live_time_per_frame,
+        )
 
         p = self.params
         # The exe does string concatenation so it needs a trailing separator
         folder_exe = p["folder"].rstrip(os.sep) + os.sep
         filepath = os.path.join(p["folder"], p["filename"] + ".bin")
+        mode = p["hitmap_mode"]
+        retries = 0
 
         while not self._abort:
-            # Rebuilt every pass (not hoisted above the loop) so that
-            # nframes/exposure_time/chip_config edits made in the GUI while
-            # live view is running take effect on the very next acquisition
-            # instead of only after a Stop/Start cycle.
+            # Snapshot the parameters the GUI thread can change mid-run
+            # (nframes/exposure via the spinboxes) ONCE per pass: the very
+            # same nframes must drive the acquisition and the decode, or a
+            # mid-pass edit would have us read frames this pass never wrote
+            # and mix in leftovers from the previous one.
+            nframes = int(p["nframes"])
+            exposure_ticks = int(p["exposure_time"])
+
+            _truncate_bin(filepath)
             cmd = [
                 exe_path,
                 str(p["chip_config"]),
-                str(p["exposure_time"]),
-                str(p["nframes"]),
+                str(exposure_ticks),
+                str(nframes),
                 folder_exe,
                 p["filename"],
             ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=p["exe_dir"],
-                creationflags=_NO_WINDOW,
-            )
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=p["exe_dir"],
+                    creationflags=_NO_WINDOW,
+                )
+            except OSError as exc:
+                retries += 1
+                self.error.emit(f"Could not start the exe ({exc}); retry {retries}")
+                self._retry_pause()
+                continue
             if self._abort:
                 break
             if result.returncode != 0:
+                # Retry instead of ending the preview -- the next acquisition
+                # usually succeeds, and the user decides when to stop.
+                retries += 1
                 self.error.emit(
-                    f"Acquisition failed (exit code {result.returncode}): "
-                    f"{result.stderr.strip()}"
+                    f"Acquisition failed (exit code {result.returncode}), "
+                    f"retrying [{retries}]: {result.stderr.strip()}"
                 )
-                break
+                self._retry_pause()
+                continue
 
+            # Reduce over every captured frame, not just frame 0 -- the
+            # acquisition already holds them, and that is what makes the
+            # preview match the offline hitmap analysis.
             try:
-                _, photon_counts = unpack_kelpie_binary_data(filepath, 1)
-            except (OSError, ValueError) as exc:
-                self.error.emit(f"Cannot decode frame: {exc}")
-                break
+                hitmap, frames, frames_read = accumulate_hitmap(
+                    filepath, nframes, mode
+                )
+            except Exception as exc:  # noqa: BLE001 - a bad pass must not stop us
+                # An empty or short .bin means that one acquisition produced
+                # nothing usable; report it and take the next one. Anything
+                # else unexpected is treated the same way, because a live view
+                # that quits on its own is worse than one that complains.
+                retries += 1
+                self.error.emit(
+                    f"Unusable acquisition, retrying [{retries}]: {exc}"
+                )
+                self._retry_pause()
+                continue
+            retries = 0
 
-            self.frame.emit(photon_counts[:, :, 0])
+            live, unit, live_source = live_time_per_frame(
+                mode, exposure_ticks * CLK_PERIOD, p["folder"], nframes
+            )
+            self.frame.emit(
+                {
+                    "hitmap": hitmap,
+                    "frames": frames,
+                    "frames_read": frames_read,
+                    "frames_requested": nframes,
+                    "mode": mode,
+                    "live_per_frame": live,
+                    "unit": unit,
+                    "live_source": live_source,
+                }
+            )
 
     # ------------------------------------------------------------------
     # Full-array (64x64) quadrant-cycling loop
     # ------------------------------------------------------------------
 
     def _run_64(self, exe_path: str):
-        from dapkel_rtp.functions.unpack import unpack_kelpie_binary_data
+        from dapkel_rtp.functions.hitmap import (
+            accumulate_hitmap,
+            live_time_per_frame,
+        )
 
         p = self.params
         folder_exe = p["folder"].rstrip(os.sep) + os.sep
         quadrant_programs = p["quadrant_programs"]  # tag -> program file path
         pwr_cwd = p["pwr_cwd"]
+        mode = p["hitmap_mode"]
+        retries = 0
 
         while not self._abort:
-            dcr64 = np.zeros((64, 64), dtype=np.float64)
+            # Per-quadrant accumulated hitmaps with their own frame counts:
+            # each quadrant is a separate acquisition, so each is normalised by
+            # the frames *it* delivered rather than rescaled onto a common
+            # basis. Nothing is scaled to match anything else.
+            quad_maps: dict[str, tuple[np.ndarray, int]] = {}
+            # Snapshot once per composite frame, so all four quadrants share
+            # one acquisition setting even if the GUI is edited mid-cycle.
+            nframes = int(p["nframes"])
+            exposure_ticks = int(p["exposure_time"])
+            frames_read_min = nframes
             for i, (tag, (dr, dc)) in enumerate(self._SPAD_LAYOUT.items()):
                 if self._abort:
                     return
@@ -337,46 +456,157 @@ class LiveViewWorker(QThread):
                     p["exe_dir"], quadrant_programs[tag], pwr_cwd
                 )
                 if not ok:
-                    self.error.emit(f"{tag} programming failed: {msg}")
-                    return
+                    retries += 1
+                    self.error.emit(
+                        f"{tag} programming failed, retrying [{retries}]: {msg}"
+                    )
+                    self._retry_pause()
+                    break
                 if self._abort:
                     return
 
                 self.stage.emit(f"Acquiring {tag} ({i + 1}/4)…")
                 filename = f"live_{tag}"
                 filepath = os.path.join(p["folder"], filename + ".bin")
+                _truncate_bin(filepath)
                 cmd = [
                     exe_path,
                     str(p["chip_config"]),
-                    str(p["exposure_time"]),
-                    str(p["nframes"]),
+                    str(exposure_ticks),
+                    str(nframes),
                     folder_exe,
                     filename,
                 ]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=p["exe_dir"],
-                    creationflags=_NO_WINDOW,
-                )
-                if result.returncode != 0:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=p["exe_dir"],
+                        creationflags=_NO_WINDOW,
+                    )
+                except OSError as exc:
+                    retries += 1
                     self.error.emit(
-                        f"{tag} acquisition failed (exit code {result.returncode}): "
+                        f"Could not start the exe ({exc}); retry {retries}"
+                    )
+                    self._retry_pause()
+                    break
+                if result.returncode != 0:
+                    retries += 1
+                    self.error.emit(
+                        f"{tag} acquisition failed (exit code "
+                        f"{result.returncode}), retrying [{retries}]: "
                         f"{result.stderr.strip()}"
                     )
-                    return
+                    self._retry_pause()
+                    break
 
                 try:
-                    _, photon_counts = unpack_kelpie_binary_data(filepath, 1)
-                except (OSError, ValueError) as exc:
-                    self.error.emit(f"Cannot decode {tag}: {exc}")
-                    return
-
-                rows = np.arange(32) * 2 + dr
-                cols = np.arange(32) * 2 + dc
-                dcr64[np.ix_(rows, cols)] = photon_counts[:, :, 0]
+                    quad, frames_q, read_q = accumulate_hitmap(
+                        filepath, nframes, mode
+                    )
+                except Exception as exc:  # noqa: BLE001 - see _run_32
+                    # One unusable quadrant means no composite frame this
+                    # round; take the next cycle rather than ending the view.
+                    retries += 1
+                    self.error.emit(
+                        f"{tag} unusable, retrying [{retries}]: {exc}"
+                    )
+                    self._retry_pause()
+                    break
+                quad_maps[tag] = (quad, frames_q)
+                frames_read_min = min(frames_read_min, read_q)
 
             if self._abort:
                 return
-            self.frame.emit(dcr64)
+            if len(quad_maps) < len(self._SPAD_LAYOUT):
+                continue  # a quadrant needs retrying; start the next cycle
+            retries = 0
+
+            # Stitch onto the full sensor grid, each quadrant carrying its own
+            # valid-frame count so the rate can be formed per pixel from what
+            # that quadrant actually measured -- no quadrant is scaled to
+            # match another. Quadrants that delivered nothing keep a frame
+            # count of 0 and are reported rather than filled in.
+            hitmap64 = np.zeros((64, 64), dtype=np.float64)
+            frames64 = np.zeros((64, 64), dtype=np.float64)
+            for tag, (dr, dc) in self._SPAD_LAYOUT.items():
+                quad, used = quad_maps[tag]
+                rows = np.arange(32) * 2 + dr
+                cols = np.arange(32) * 2 + dc
+                hitmap64[np.ix_(rows, cols)] = quad
+                frames64[np.ix_(rows, cols)] = used
+
+            frames_by_tag = {t: used for t, (_, used) in quad_maps.items()}
+            empty = [t for t, used in frames_by_tag.items() if not used]
+            if empty:
+                self.stage.emit(f"No data from {', '.join(empty)}")
+
+            live, unit, live_source = live_time_per_frame(
+                mode, exposure_ticks * CLK_PERIOD, p["folder"], nframes
+            )
+            self.frame.emit(
+                {
+                    "hitmap": hitmap64,
+                    "frames": frames64,
+                    "frames_by_tag": frames_by_tag,
+                    "frames_read": frames_read_min,
+                    "frames_requested": nframes,
+                    "mode": mode,
+                    "live_per_frame": live,
+                    "unit": unit,
+                    "live_source": live_source,
+                }
+            )
+
+
+# ---------------------------------------------------------------------------
+# Data-quality worker
+# ---------------------------------------------------------------------------
+
+
+class DataQualityWorker(QThread):
+    """Runs one data-quality check over a single '.bin' file.
+
+    No hardware is touched: this only decodes a file that is already on disk.
+    It runs off the GUI thread because a full-length acquisition is hundreds
+    of chunks of decoding, and it reports progress per chunk so a long file
+    can be watched and aborted.
+    """
+
+    progress = pyqtSignal(int)  # 0-100 percent of frames examined
+    finished = pyqtSignal(object)  # summary dict from data_quality.check_file
+    error = pyqtSignal(str)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+        self._abort = False
+
+    def abort(self):
+        self._abort = True
+
+    def run(self):
+        # An unhandled exception here would leave the tab with Abort enabled
+        # and no result ever arriving, which looks exactly like a check that
+        # silently hung -- report it instead.
+        from dapkel_rtp.functions.data_quality import check_file
+
+        p = self.params
+        try:
+            summary = check_file(
+                p["filepath"],
+                p["nframes"],
+                p["pixel"],
+                p["mode"],
+                progress=self._on_progress,
+                should_abort=lambda: self._abort,
+            )
+        except Exception as exc:  # noqa: BLE001 - last-resort reporter
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(summary)
+
+    def _on_progress(self, done: int, total: int):
+        self.progress.emit(int(done / total * 100) if total else 0)
