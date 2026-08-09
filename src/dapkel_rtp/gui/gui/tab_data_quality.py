@@ -13,7 +13,7 @@ What is shown is counted out of the file, never modelled:
 * the histogram is the exact per-code distribution over every frame examined,
   rebinned only for drawing (see dapkel_rtp.functions.data_quality);
 * frames that carry no data are dropped structurally, so the unwritten tail of
-  the fixed-size DDR3 dump and the chip's idle pattern are not counted as
+  the block-padded readout and the chip's idle pattern are not counted as
   frames that failed to record timing;
 * the pixel map beside it is the number of valid timestamps each pixel
   produced - it comes free with the decode and shows at a glance whether the
@@ -66,6 +66,7 @@ from dapkel_rtp.functions.data_quality import (
 
 from ._paths import functions_dir
 from .style import AMBER, BG, CYAN, OUTLINE, RED, SURFACE_LOW, TEXT_DIM
+from .widgets import make_nframes_combo
 from .worker import DataQualityWorker
 
 # Left border of the report block, by verdict. n/a and "no result yet" keep
@@ -78,9 +79,17 @@ _VERDICT_COLOR = {
 
 _FRAMES_TIP = (
     "Frames to examine, from the start of the file.\n"
-    "0 = every frame the file holds. A few thousand is plenty to see\n"
-    "whether the TDC is timing; the whole file takes proportionally\n"
-    "longer to decode."
+    "One 8192-frame block is plenty to see whether the TDC is timing;\n"
+    "more takes proportionally longer to decode.\n"
+    "\n"
+    "'all' does NOT mean every slot in the file. The readout is\n"
+    "quantised to 16 MiB blocks, so a 10 000-frame run lands in a\n"
+    "16 384-slot file whose last 6 384 slots replay slots 1808..8191\n"
+    "byte for byte. 'all' measures where that replay starts and stops\n"
+    "there, so no frame is histogrammed twice.\n"
+    "Set the number the run was acquired with when you know it. The\n"
+    "default 16 384 is what the acquisition tabs ask for, and it fills\n"
+    "two blocks exactly, so such a file has nothing replayed."
 )
 
 _PIXEL_TIP = (
@@ -109,7 +118,16 @@ class DataQualityTab(QWidget):
         self._summary: dict | None = None  # last result, for a bins redraw
         self._t0 = 0.0
         self._build_ui()
-        self.folder_edit.setText(os.path.join(functions_dir(), "data"))
+        default_folder = os.path.join(functions_dir(), "data")
+        # The acquisition tabs create this on their first run; make it exist for
+        # a first scan too. The release bundle used to ship the folder (and the
+        # stale acquisitions inside it), so without this the released app would
+        # open on '⚠ Not a folder' instead of 'No .bin files in this folder'.
+        try:
+            os.makedirs(default_folder, exist_ok=True)
+        except OSError:
+            pass  # unwritable location: the scan reports it, nothing to fix here
+        self.folder_edit.setText(default_folder)
         self._rescan()
 
     # ------------------------------------------------------------------
@@ -207,14 +225,9 @@ class DataQualityTab(QWidget):
         params.addWidget(self.col_spin)
 
         params.addWidget(QLabel("Frames:"))
-        self.nframes_spin = QSpinBox()
-        self.nframes_spin.setRange(0, 1_100_000)
-        self.nframes_spin.setValue(5000)
-        self.nframes_spin.setSingleStep(1000)
-        self.nframes_spin.setSpecialValueText("all")
-        self.nframes_spin.setFixedWidth(90)
-        self.nframes_spin.setToolTip(_FRAMES_TIP)
-        params.addWidget(self.nframes_spin)
+        self.nframes_combo = make_nframes_combo(all_option=True)
+        self.nframes_combo.setToolTip(_FRAMES_TIP)
+        params.addWidget(self.nframes_combo)
 
         params.addWidget(QLabel("Bins:"))
         self.bins_spin = QSpinBox()
@@ -290,7 +303,12 @@ class DataQualityTab(QWidget):
 
     def _on_pixel_mode(self, idx: int):
         single = bool(self.pixel_combo.itemData(idx))
-        for w in (self.row_label, self.row_spin, self.col_label, self.col_spin):
+        for w in (
+            self.row_label,
+            self.row_spin,
+            self.col_label,
+            self.col_spin,
+        ):
             w.setEnabled(single)
 
     # ------------------------------------------------------------------
@@ -351,8 +369,11 @@ class DataQualityTab(QWidget):
         size_mb = entry["size"] / (1024 * 1024)
         stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry["mtime"]))
         tag = entry["tag"] or "?"
+        # "slots", not "frames": the count is the file's size in frame-sized
+        # slots, which the block-quantised readout pads past whatever the run
+        # actually recorded (see _FRAMES_TIP).
         return (
-            f"{entry['name']:<34}  {entry['frames']:>9,} frames  "
+            f"{entry['name']:<34}  {entry['frames']:>9,} slots  "
             f"{size_mb:>8.1f} MB   {tag:<9}  {stamp}"
         )
 
@@ -385,23 +406,23 @@ class DataQualityTab(QWidget):
             self._style_report(None)
             return
 
-        nframes = self.nframes_spin.value()
+        nframes = self.nframes_combo.currentData()
         single = bool(self.pixel_combo.currentData())
         params = {
             "filepath": filepath,
             "nframes": nframes or None,  # 0 (shown as "all") = whole file
-            "pixel": (self.row_spin.value(), self.col_spin.value())
-            if single
-            else None,
+            "pixel": (
+                (self.row_spin.value(), self.col_spin.value())
+                if single
+                else None
+            ),
             "mode": self.mode_combo.currentData(),
         }
 
         self.run_btn.setEnabled(False)
         self.abort_btn.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.report_label.setText(
-            f"Checking {os.path.basename(filepath)}…"
-        )
+        self.report_label.setText(f"Checking {os.path.basename(filepath)}…")
         self._style_report(None)
         self._t0 = time.perf_counter()
 

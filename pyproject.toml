@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dapkel-rtp"
-version = "0.0.1"
+# Read from dapkel_rtp.__version__ rather than duplicated here. This file used to
+# carry its own literal and was left at 0.0.1 through the 0.1.0 release, so the
+# installed package, the app and the CHANGELOG all disagreed. One source now.
+dynamic = ["version"]
 description = "DAPKEL-RTP — Data Analysis Package for KELpie, real-time plotting"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,6 +26,9 @@ dependencies = [
     "matplotlib>=3.7",
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "dapkel_rtp.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -32,4 +38,8 @@ where = ["src"]
     "functions/helpers/*.dll",
     "params/camera/programs/*.txt",
     "params/camera/bitfile/*.bit",
+    # One bitfile folder per firmware version; Kelpie_v2_pwr_mgt.exe selects a
+    # version by the directory it is launched from (see gui/gui/_paths.py).
+    "params/camera/short_exposure/bitfile/*.bit",
+    "params/camera/long_exposure/bitfile/*.bit",
 ]

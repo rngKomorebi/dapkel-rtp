@@ -20,6 +20,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Before anything is built: the version the app reports must match the
+      # newest numbered section of CHANGELOG.md. This drifted silently for two
+      # releases (pyproject.toml sat at 0.0.1 while the CHANGELOG reached 0.1.0),
+      # so it is a build gate, not a convention.
+      - name: Check version against CHANGELOG
+        run: python tools/check_version.py
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -33,16 +40,32 @@ jobs:
         working-directory: src
         run: pyinstaller --clean main.spec
 
-      - name: Compute short commit SHA
+      - name: Collect version and commit
         id: vars
         shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(python -c 'import re,pathlib; print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", pathlib.Path("src/dapkel_rtp/__init__.py").read_text()).group(1))')" >> "$GITHUB_OUTPUT"
+
+      # Every commit to main publishes a build, so the tag has to stay unique per
+      # run -- but it now carries the version, and so do the release name and the
+      # exe. Before this, a downloaded DAPKEL-RTP.exe gave no way to tell which
+      # version it was.
+      - name: Name the executable after the version
+        shell: bash
+        run: |
+          mv "src/dist/DAPKEL-RTP.exe" \
+             "src/dist/DAPKEL-RTP-v${{ steps.vars.outputs.version }}.exe"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}-${{ steps.vars.outputs.sha_short }}
-          name: "Build #${{ github.run_number }} (${{ steps.vars.outputs.sha_short }})"
+          tag_name: v${{ steps.vars.outputs.version }}-build.${{ github.run_number }}
+          name: "DAPKEL-RTP v${{ steps.vars.outputs.version }} — build #${{ github.run_number }} (${{ steps.vars.outputs.sha_short }})"
           body: |
-            Automated build from commit ${{ github.sha }}.
-          files: src/dist/DAPKEL-RTP.exe
+            Version **${{ steps.vars.outputs.version }}**, built from commit ${{ github.sha }}.
+
+            The version is the newest numbered section of `CHANGELOG.md`; see it
+            for what changed. Builds from a tree with an `[Unreleased]` section
+            still report the last released version.
+          files: src/dist/DAPKEL-RTP-v${{ steps.vars.outputs.version }}.exe

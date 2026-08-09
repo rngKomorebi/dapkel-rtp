@@ -29,6 +29,15 @@ Thumbs.db
 # Claude Code local session state (not project content)
 .claude/
 
-# Default acquisition/live-view output folders (runtime test data, not source)
+# Measurement data. Never in git: one acquisition is 32 MB, and a folder of
+# them is the group's data, not this repo's source. The two folder rules below
+# cover the app's default output paths; the '*.bin' rule catches an acquisition
+# taken anywhere else in the tree (helpers/test_manual/, a scratch folder, a
+# path someone typed into the Output Folder box).
+*.bin
 src/dapkel_rtp/functions/helpers/data/
 src/dapkel_rtp/functions/helpers/live/
+
+# The exe writes this next to every acquisition. Nothing reads it (see
+# CHANGELOG: it is not a usable frame period), and a stale copy misleads humans.
+frame_rate_cnt.txt

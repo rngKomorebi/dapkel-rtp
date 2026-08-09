@@ -7,7 +7,7 @@ the acquisition reduced to one per-pixel map, shown as a photon rate.
 Everything shown is counted out of the raw data, never modelled:
 
 * every frame the acquisition wrote is reduced over, not sampled at frame 0 —
-  a single 20 µs frame is shot noise, the reduction is the map (see
+  a single frame is shot noise, the reduction is the map (see
   dapkel_rtp.functions.hitmap);
 * which reduction depends on the loaded program: summed photon counts for the
   ``*C`` programs, frames-with-a-valid-timestamp for the timestamp programs
@@ -16,10 +16,12 @@ Everything shown is counted out of the raw data, never modelled:
   with however many idle frames a pass happened to start with;
 * the colour scale spans the full measured range — hot pixels are shown as
   measured, nothing is clipped or smoothed;
-* the colourbar is a photon rate: cps (counts / exposure) in count mode, Hz
-  (firings / measured frame period) in timestamp mode. When the frame period
-  cannot be measured, the counted map is shown in its own units instead of a
-  rate derived from an assumed period.
+* the colourbar is a photon rate, and both modes divide by the same thing —
+  the frame length, stated by the selected firmware and the shutter time
+  (9 µs fixed under short_exposure, shutter + 9 µs under long_exposure). Count
+  mode reads as cps, timestamp mode as Hz, bounded by one firing per frame.
+  Nothing is read out of frame_rate_cnt.txt: that counter is not a frame
+  period, see dapkel_rtp.functions.timing.
 
 The loop keeps acquiring until Stop: a failed acquisition is reported and
 retried, never a reason to end the preview.
@@ -50,6 +52,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from dapkel_rtp.functions.timing import CLK_PERIOD
+
 from dapkel_rtp.functions.hitmap import (
     MODE_COUNT,
     color_limits,
@@ -57,24 +61,42 @@ from dapkel_rtp.functions.hitmap import (
     photon_rate,
 )
 
-from ._paths import functions_dir, params_camera_dir, programs_dir
+from ._paths import (
+    BITFILE_NAME,
+    FIRMWARE_LONG_EXPOSURE,
+    FIRMWARE_SHORT_EXPOSURE,
+    firmware_bitfile,
+    functions_dir,
+    programs_dir,
+    resolve_pwr_mgt_cwd,
+)
+from .fpga_state import FPGA
 from .style import BG, OUTLINE, TEXT_DIM
-from .tab_acquisition import SettingsDialog
+from .tab_acquisition import EXP_UI, FIRMWARE_TIP, FRAME_READOUT_US, SettingsDialog
 from .worker import LiveViewWorker, PowerMgtWorker
 
-CLK_PERIOD = 5e-9  # 200 MHz clock -> 5 ns
-
 # Tooltip for Frames/acq, kept in one place: it is re-set on every mode change.
+# Unlike the acquisition tabs this box is free-running, not stepped to the
+# readout's 8192-frame block: the preview throws every pass away, so a run that
+# stops mid-block never leaves a replayed tail in a file anyone keeps.
+_NFRAMES_TIP_STATS = (
+    "This does not change the rate, only how well it is measured: the\n"
+    "rate divides by the frames it counted, so more frames buy precision,\n"
+    "not a bigger number. One photon is worth 1/(frames x shutter), and no\n"
+    "pixel can read between two multiples of that — which is why a short\n"
+    "pass makes the median and the colourbar top jump while the mean,\n"
+    "shown first, holds steady."
+)
 _NFRAMES_TIP_32 = (
     "Frames captured per acquisition; every one of them is counted into\n"
     "the previewed hitmap.\n"
-    "More frames = smoother map, slower refresh."
+    "More frames = smoother map, slower refresh.\n" + _NFRAMES_TIP_STATS
 )
 _NFRAMES_TIP_64 = (
     "Frames captured per quadrant acquisition (x4 per composite frame,\n"
     "one per S0C/S1C/S2C/S3C); every one of them is counted into the\n"
     "previewed hitmap.\n"
-    "Lower this for a faster refresh."
+    "Lower this for a faster refresh.\n" + _NFRAMES_TIP_STATS
 )
 
 
@@ -107,12 +129,16 @@ class LiveViewTab(QWidget):
         self._plot_shape = None
         self._plot_canvas_size = None
         self._plot_clabel = None  # colourbar units currently drawn
-        self._pwr_mgt_program: str | None = None  # program currently loaded on the FPGA
-        self._pwr_mgt_pending_program: str | None = None
+        # (program, firmware) pair this tab last programmed; shared with the
+        # other tabs via fpga_state so nobody acts on a stale belief.
+        self._pwr_mgt_state: tuple[str, str] | None = None
+        self._pwr_mgt_pending_state: tuple[str, str] | None = None
         self._startup_complete = False
         self._build_ui()
         self._populate_programs()
+        self._on_firmware_change()  # apply the default firmware's shutter rules
         self.program_combo.currentIndexChanged.connect(self._on_program_change)
+        self.firmware_combo.currentIndexChanged.connect(self._on_firmware_change)
         # _on_mode_change's 32x32 branch calls _on_program_change, which
         # would otherwise auto-fire a real Power Mgt run during widget
         # construction, before the user has done anything.
@@ -158,33 +184,63 @@ class LiveViewTab(QWidget):
         self.program_combo.setMinimumWidth(130)
         params.addWidget(self.program_combo)
 
+        # The preview's rate divides by the frame length, and the frame length
+        # depends on the firmware -- 9 µs fixed, or shutter + 9 µs. Without
+        # knowing which, the colourbar would be a number with no defensible
+        # unit, which is what reading it out of frame_rate_cnt.txt used to be.
+        params.addWidget(QLabel("Firmware:"))
+        self.firmware_combo = QComboBox()
+        self.firmware_combo.setMinimumWidth(175)
+        self.firmware_combo.setToolTip(FIRMWARE_TIP)
+        for version, text in (
+            (FIRMWARE_SHORT_EXPOSURE, "short_exposure"),
+            (FIRMWARE_LONG_EXPOSURE, "long_exposure"),
+        ):
+            missing = firmware_bitfile(version) is None
+            self.firmware_combo.addItem(
+                text + ("   [bitstream missing]" if missing else ""),
+                userData=version,
+            )
+        params.addWidget(self.firmware_combo)
+
         params.addWidget(QLabel("Frames/acq:"))
         self.nframes_spin = QSpinBox()
         self.nframes_spin.setRange(1, 1_100_000)
-        self.nframes_spin.setValue(800)
+        # Not the acquisition tabs' 16 384, and not stepped to their 8192
+        # block: this is a preview that reacquires every pass, so the frame
+        # count is a refresh-rate choice, not a file-layout one.
+        self.nframes_spin.setValue(1000)
         self.nframes_spin.setSingleStep(100)
         self.nframes_spin.setFixedWidth(90)
         self.nframes_spin.setToolTip(_NFRAMES_TIP_32)
         params.addWidget(self.nframes_spin)
 
-        params.addWidget(QLabel("Exp:"))
+        self.exp_label = QLabel("Shutter:")
+        params.addWidget(self.exp_label)
         self.exp_spin = QDoubleSpinBox()
-        self.exp_spin.setRange(0.0, 1_000_000.0)
+        self.exp_spin.setRange(0.0, FRAME_READOUT_US)
         self.exp_spin.setDecimals(3)
-        self.exp_spin.setValue(20.0)
+        self.exp_spin.setValue(0.2)
         self.exp_spin.setSuffix(" µs")
         self.exp_spin.setFixedWidth(110)
-        self.exp_spin.setToolTip(
-            "Exposure time, set directly: whatever you enter here is the\n"
-            "actual exposure achieved, e.g. 0.2 µs → 200 ns exposure.\n"
-            "Readout takes the rest of the fixed ~9 µs frame period:\n"
-            "readout = 9 µs - exposure. (Requires external_frame_trigger\n"
-            "OFF in Settings -- that's a separate SMA hardware-sync feature.)"
-        )
         params.addWidget(self.exp_spin)
+
+        self.frame_label = QLabel()
+        self.frame_label.setStyleSheet(
+            f"color: {TEXT_DIM}; "
+            "font-family: 'JetBrains Mono', Consolas, monospace;"
+        )
+        self.frame_label.setToolTip(
+            "One frame's length, from the firmware and the shutter time.\n"
+            "The previewed rate does not divide by this but by the live\n"
+            "(shutter-open) part of it, as dapkel does — under\n"
+            "short_exposure the rest of the frame is readout."
+        )
+        params.addWidget(self.frame_label)
 
         self.nframes_spin.valueChanged.connect(self._on_live_param_change)
         self.exp_spin.valueChanged.connect(self._on_live_param_change)
+        self.exp_spin.valueChanged.connect(self._refresh_frame_label)
 
         params.addStretch()
 
@@ -290,6 +346,35 @@ class LiveViewTab(QWidget):
             self.exp_spin.value() * 1e-6 / CLK_PERIOD
         )
 
+    def _firmware(self) -> str:
+        return self.firmware_combo.currentData() or FIRMWARE_SHORT_EXPOSURE
+
+    def _on_firmware_change(self, _idx: int = 0):
+        """Re-label the shutter box for the new firmware, then reprogram."""
+        ui = EXP_UI[self._firmware()]
+        self.exp_label.setText(ui["label"])
+        self.exp_spin.setToolTip(ui["tip"])
+        before = self.exp_spin.value()
+        self.exp_spin.setMaximum(ui["maximum"])
+        after = self.exp_spin.value()
+        if after != before:
+            self.status_label.setText(
+                f"Shutter capped at {after:.3f} µs by {self._firmware()} "
+                f"(was {before:.3f} µs)."
+            )
+        self._refresh_frame_label()
+        self._on_live_param_change()
+        self._on_program_change(self.program_combo.currentIndex())
+
+    def _refresh_frame_label(self):
+        """Show the frame length the previewed rate divides by."""
+        frame_us = (
+            self.exp_spin.value() + FRAME_READOUT_US
+            if self._firmware() == FIRMWARE_LONG_EXPOSURE
+            else FRAME_READOUT_US
+        )
+        self.frame_label.setText(f"{frame_us:.3f} µs/frame")
+
     def _on_program_change(self, _idx: int):
         """Auto-run Power Mgt whenever the selected program actually
         changes, since the FPGA must be reprogrammed each time -- Power Mgt
@@ -309,7 +394,7 @@ class LiveViewTab(QWidget):
         if current is None:
             return
 
-        if current == self._pwr_mgt_program:
+        if (current, self._firmware()) == self._pwr_mgt_state:
             self.start_btn.setEnabled(True)
             self.start_btn.setToolTip("")
         else:
@@ -335,23 +420,32 @@ class LiveViewTab(QWidget):
             self.status_label.setText("⚠  Program file not found.")
             return
 
+        firmware = self._firmware()
+        cwd, bitfile = resolve_pwr_mgt_cwd(firmware)
+        if bitfile is None:
+            self.status_label.setText(
+                f"⚠  No {BITFILE_NAME} for {firmware}, nor in the legacy folder."
+            )
+            return
+
         self.pwr_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.program_combo.setEnabled(False)
-        self.status_label.setText("Initialising FPGA…")
+        self.firmware_combo.setEnabled(False)
+        self.status_label.setText(f"Initialising FPGA ({firmware})…")
 
-        self._pwr_mgt_pending_program = program_path
-        self._pwr_worker = PowerMgtWorker(
-            self._exe_dir, program_path, params_camera_dir()
-        )
+        self._pwr_mgt_pending_state = (program_path, firmware)
+        self._pwr_worker = PowerMgtWorker(self._exe_dir, program_path, cwd)
         self._pwr_worker.finished.connect(self._on_pwr_mgt_finished)
         self._pwr_worker.start()
 
     def _on_pwr_mgt_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
         self.program_combo.setEnabled(True)
+        self.firmware_combo.setEnabled(True)
         if success:
-            self._pwr_mgt_program = self._pwr_mgt_pending_program
+            self._pwr_mgt_state = self._pwr_mgt_pending_state
+            FPGA.set_loaded(*self._pwr_mgt_pending_state)
             # Live View only re-enables Start once mode/program still match
             # what was just programmed; re-check rather than force True.
             self._on_program_change(self.program_combo.currentIndex())
@@ -379,6 +473,11 @@ class LiveViewTab(QWidget):
 
         mode_64 = self.mode_combo.currentIndex() == 1
         if mode_64:
+            # 64x64 reprograms per quadrant inside the worker loop, so from now
+            # on what is loaded is whichever quadrant ran last. Unknown is the
+            # honest answer; see fpga_state.
+            FPGA.clear()
+            self._pwr_mgt_state = None
             quadrant_programs = self._resolve_quadrant_programs()
             if quadrant_programs is None:
                 self.status_label.setText(
@@ -393,7 +492,8 @@ class LiveViewTab(QWidget):
                 "folder": folder,
                 "mode_64": True,
                 "quadrant_programs": quadrant_programs,
-                "pwr_cwd": params_camera_dir(),
+                "pwr_cwd": resolve_pwr_mgt_cwd(self._firmware())[0],
+                "firmware_version": self._firmware(),
                 # All four quadrant programs are S*C, hence count mode; read
                 # it off one of them rather than hardcoding the reduction.
                 "hitmap_mode": mode_for_program(quadrant_programs["S0C"]),
@@ -411,6 +511,7 @@ class LiveViewTab(QWidget):
                 "folder": folder,
                 "filename": "live",
                 "mode_64": False,
+                "firmware_version": self._firmware(),
                 # The program decides the reduction: summing the counts field
                 # of a timestamp program would sum coarse-timestamp bits.
                 "hitmap_mode": mode_for_program(program_path),
@@ -571,17 +672,21 @@ class LiveViewTab(QWidget):
         clim = color_limits(data)
         canvas_size = (self.canvas.width(), self.canvas.height())
 
+        mean = float(np.mean(data))
         median = float(np.median(data))
         peak = float(data.max())
+        step = self._rate_step(rate, frames, payload["live_per_frame"])
         frames_txt = self._frames_text(frames, frames_req)
+        # Mean first: it is the only one of the three that does not move with
+        # the frame count. See '_rate_step' for why the other two do.
         # The colourbar spans the full range, so it already shows the scale --
         # no need to restate it here (and a long second line would run into
         # the colourbar's exponent label).
         title = (
             f"Live hitmap #{self._frame_count}  {rows}×{cols}   "
             f"{mode} mode   ({self._fps:.1f} fps)\n"
-            f"{frames_txt}  ·  median {median:.3g}{unit}  ·  "
-            f"max {peak:.3g}{unit}"
+            f"{frames_txt}  ·  mean {mean:.3g}{unit}  ·  "
+            f"median {median:.3g}{unit}  ·  max {peak:.3g}{unit}"
         )
 
         needs_rebuild = (
@@ -609,11 +714,42 @@ class LiveViewTab(QWidget):
         status = (
             f"Live, hitmap #{self._frame_count}, {self._fps:.1f} fps, "
             f"{frames_txt}, {payload['live_source']}, "
-            f"median {median:.3g}{unit}, max {peak:.3g}{unit}"
+            f"mean {mean:.3g}{unit}, median {median:.3g}{unit}, "
+            f"max {peak:.3g}{unit}"
         )
+        if step is not None:
+            status += f", one count = {step:.3g}{unit}"
         if read < frames_req:
             status += f"  [only {read} frames in the file]"
         self.status_label.setText(status)
+
+    @staticmethod
+    def _rate_step(
+        rate, frames, live_per_frame: float | None
+    ) -> float | None:
+        """What one photon is worth on the rate map, in the rate's own unit.
+
+        A pixel that fired ``k`` times in ``N`` frames reads ``k / (N * live)``,
+        so the whole map is a grid of this step and no pixel can land between
+        two of its rungs. That is the entire reason the median and the
+        colourbar top move when the frame count changes while the light does
+        not: at 200 ns shutter one count is 100 kHz over 50 frames but 610 Hz
+        over 8192, against a typical pixel of a few kHz — so a short pass
+        rounds most pixels to 0 or to one whole rung. The mean over the array
+        averages the rounding away and holds steady; these two cannot.
+
+        Returns None when no rate is being shown, or when the map is per-pixel
+        (64x64 mode) with no frame count above zero. In 64x64 mode the
+        quadrants have their own frame counts, so the coarsest one is used --
+        the step the operator would notice first.
+        """
+        if rate is None or not live_per_frame:
+            return None
+        counted = np.asarray(frames, dtype=np.float64)
+        counted = counted[counted > 0]
+        if not counted.size:
+            return None
+        return 1.0 / (float(counted.min()) * live_per_frame)
 
     @staticmethod
     def _frames_text(frames, frames_req: int) -> str:
