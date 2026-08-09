@@ -23,6 +23,88 @@ The "params" tab hold the programs for programming the SPADs and the bitfile dat
 
 The standalone repo for the offline data unpacking and analysis can be found [here](https://github.com/rngKomorebi/dapkel).
 
+## The app
+
+Four tabs, all writing into a folder you choose:
+
+- **Single Acquisition** — run `Kelpie_v2.exe` *N* times into one folder.
+- **Chain Acquisition** — a queue of jobs, each with its own program, frame
+  count and shutter time, reprogramming the FPGA between them as needed.
+- **Live View** — continuous hitmap preview, 32×32 or a stitched 64×64 from the
+  four quadrant programs.
+- **Data Quality** — decode one `.bin` and check that the TDC actually recorded
+  timing. That failure is silent otherwise: the decode returns plausible
+  integers either way.
+
+### Firmware versions
+
+Two bitstreams exist, and which one is loaded changes what a frame is:
+
+| | frame length | the shutter box means |
+|---|---|---|
+| `short_exposure` | fixed 9 µs | the window inside that frame (50–500 ns typically) |
+| `long_exposure` | shutter + 9 µs | the window, with 9 µs of readout appended |
+
+`Kelpie_v2_pwr_mgt.exe` takes no bitstream argument — it opens the hardcoded
+relative path `./bitfile/Kelpie_top.bit` from its working directory. A version
+is therefore selected by *which folder the exe is launched from*:
+
+```
+src/dapkel_rtp/params/camera/short_exposure/bitfile/Kelpie_top.bit
+src/dapkel_rtp/params/camera/long_exposure/bitfile/Kelpie_top.bit
+```
+
+Put each bitstream in its folder under that exact name. Nothing is copied or
+overwritten, so both stay intact and it is unambiguous which was loaded. Until a
+file is placed the app falls back to the legacy `params/camera/bitfile/` and says
+so in the log. Changing the selection reprograms the FPGA immediately, as
+changing the program already does.
+
+### Every acquisition writes a `metadata.json`
+
+One record per run in the output folder, describing how, where and when the data
+was taken — frame count, shutter time, firmware and its bitstream hash, chip
+config, program file, bias voltage, timestamps, measured and derived durations.
+A folder can hold several runs, so the file is a `runs` array; a `metadata.json`
+this app did not write is never overwritten.
+
+Two keys carry the timing, and they mean the same thing under both firmware
+versions:
+
+- `open_shutter_time_s` — how long the shutter is open in one frame.
+- `frame_acq_time_s` — how long one frame takes.
+
+`wallclock_time_s` is `total_frames * frame_acq_time_s`, i.e. **camera** time,
+matching `dapkel`'s key of the same name. The measured host duration is the
+separate `wallclock_time_measured_s`; on real data the two differ by ~7×.
+
+### A `.bin` holds more frame slots than you asked for
+
+The readout is quantised to 16 MiB blocks, so a 10 000-frame run lands in a
+16 384-slot file. **The extra slots are not extra data** — they are a byte-exact
+replay of the slots 8192 earlier. A 10 000-frame file holds exactly 10 000
+distinct frames and 6 384 copies, verified across every dataset the group has
+taken. Read only the first `nframes`; reading the whole file counts real frames
+twice. See the CHANGELOG for the measurements.
+
+Consequently: never infer a frame count from a file size, and treat the slot
+count the Data Quality tab lists as a size, not a frame count.
+
+### `frame_rate_cnt.txt`
+
+`Kelpie_v2.exe` writes this next to every acquisition and nothing in the app
+reads it. It is not a usable frame period — see `functions/timing.py` for the
+numbers. The frame length is stated from the firmware and the shutter register
+instead. The reference scripts `matlab/extract_DCR.m`, `extract_dcr.py` and
+`dcr_hitmap.py` still read it, and are wrong by a factor of `nframes`; they are
+flagged in place rather than silently corrected.
+
+### Measurement data
+
+No `.bin` is tracked in git or shipped in the release. `*.bin` is gitignored, and
+`main.spec` lists the vendor binaries individually rather than bundling the
+folder they share with the app's default output path.
+
 ## Installation and usage
 
 A fresh, separate virtual environment is highly recommended before installing the package.

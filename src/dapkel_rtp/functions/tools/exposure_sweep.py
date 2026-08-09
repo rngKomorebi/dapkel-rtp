@@ -1,5 +1,31 @@
 """Exposure sweep -- does the firmware act on the exposure we send it?
 
+UNPROVEN: channel 1 below is not the measurement it was taken to be
+---------------------------------------------------------------------
+Read this before trusting anything this script concludes. Its first channel is
+``frame_rate_cnt.txt``, and that counter has since been shown not to be a frame
+period: across the group's drive it holds 11 distinct values, it is overwritten
+by every acquisition so only the last survives, and it does not track the
+exposure register coherently. A clean 50/100/200/500 ns sweep -- the very sweep
+this script runs, preserved in ``D:\\Kelpie\\2026.07.31\\hitmap test`` -- read
+9.700, 9.710, 9.700 and 9.770 us per frame. Not monotonic: 200 ns reads the same
+as 50 ns, and 50 -> 500 ns moves the period by 70 ns where the register asks for
+450 ns. One live-view folder's value implies ~8300 frames for a file holding
+~500.
+
+So "the frame period did not move, therefore the firmware ignores the register"
+was never supported: the instrument reading the period had no resolution to
+speak of. The counts channel (2) stands on its own and is unaffected.
+
+To settle the question the period has to be measured some other way -- host
+wall-clock per acquisition, or a scope on the frame trigger. The rest of the app
+no longer reads this counter at all; it states the frame length from the firmware
+instead (``functions/timing.py``). Nothing here has been changed, so the
+conclusions printed at the end of a run are still the old ones -- treat them as
+open questions.
+
+The original description follows.
+
 Diagnostic for the observation that 50, 100, 200 and 500 ns "acquisition
 windows" all return the same number of photons in ORC. The host side has been
 ruled out by inspection (see the notes at the bottom of this file), so what is
@@ -7,10 +33,9 @@ left to establish is what the *firmware* does with the value. This script
 measures that, from two independent quantities per acquisition:
 
   1. ``frame_rate_cnt.txt`` -- Kelpie_v2.exe writes WireOut 0x21 there after
-     every acquisition. It is a clock-tick count for the whole acquisition,
-     i.e. a direct measurement of the frame period the firmware actually ran.
-     If this does not move when the exposure register changes, the firmware
-     is not acting on it at all and nothing downstream can.
+     every acquisition. Taken to be a clock-tick count for the whole
+     acquisition, i.e. a direct measurement of the frame period the firmware
+     actually ran. **See the warning above: it does not behave like one.**
 
   2. the decoded photon counts -- total, per-frame-per-pixel mean, and the
      per-pixel-per-frame maximum (the count field is 9 bits, so 511 is

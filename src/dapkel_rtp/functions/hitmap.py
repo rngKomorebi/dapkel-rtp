@@ -23,7 +23,7 @@ the data, so there are two modes, exactly as in
       being what the camera saw and its peak wanders between refreshes. The
       hitmap must instead count, per pixel, the frames carrying a valid
       timestamp (``time_series > 0``) — an occupancy whose ceiling is one
-      firing per frame period, so the rate is in Hz.
+      firing per live window, so the rate is in Hz and saturates there.
 
 Every frame is counted
 ----------------------
@@ -32,8 +32,9 @@ the acquisition wrote, decoding the file in chunks so that a million-frame
 acquisition costs bounded memory rather than none at all.
 
 The only frames left out are the ones that hold no data, and they are
-identified structurally, not by threshold. The '.bin' is a fixed-size DDR3
-dump, so it contains both slots the acquisition never wrote (all bytes zero)
+identified structurally, not by threshold. The '.bin' holds more frame slots
+than the run asked for — the readout is quantised to 16 MiB blocks (see
+REPLAY_BLOCK_FRAMES) — so it contains both slots the run never wrote (all zero)
 and frames the chip filled with its idle pattern before data started flowing
 (every 32-bit word identical, e.g. ``0x00038007``; observed at 152 of 800
 frames on one acquisition). A real frame, dark ones included, never looks like
@@ -44,24 +45,42 @@ refreshes.
 
 Photon rate
 -----------
-The raw map is counts (or occupancy); a *rate* is that divided by the live
-time, and which time depends on the mode — mirroring hitmap_analysis:
+The raw map is counts (or occupancy); a *rate* is that divided by the *live*
+time — the seconds the pixel could actually see a photon — and both modes
+divide by the same thing, as in ``dapkel.functions.hitmap_analysis``:
 
-    * ``MODE_COUNT`` — photons accumulate while the pixel is exposed, and
-      under this firmware the exposure is what the GUI set (readout takes the
-      rest of the frame period). So ``rate = counts / (frames * exposure)`` in
-      cps, off a number the hardware was commanded with.
+    ``rate = hitmap / (frames * live_per_frame)``
 
-    * ``MODE_TIMESTAMP`` — at most one firing per frame is recorded, so the
-      normalisation is the wall-clock frame period, taken from the tick count
-      the exe *measured* into ``frame_rate_cnt.txt``: ``rate = occupancy /
-      (frames * frame_period)`` in Hz, which cannot exceed
-      ``1 / frame_period``.
+``live_per_frame`` is what ``dapkel`` calls ``acq_window``, resolved by mode as
+'dapkel.core.timing.resolve_live_time' does:
 
-When the measured frame period is unavailable or fails its consistency check,
-this module reports no rate rather than inventing one, and the caller shows
-the counted map (frames fired) with its own units. Nothing displayed is ever
-an estimate.
+    * ``short_exposure`` (dapkel's ``short_window``): the **open shutter time**.
+      Only the shutter window inside each fixed 9 µs frame is photon-sensitive;
+      the rest is readout, and normalising by it would dilute the rate by the
+      dead time — a 200 ns shutter reads 45x low.
+
+    * ``long_exposure`` (dapkel's ``full_window``): the whole
+      ``shutter + 9 µs`` frame, which is live throughout.
+
+``MODE_COUNT`` reads as cps and ``MODE_TIMESTAMP`` as Hz — the latter cannot
+exceed ``1 / live_per_frame``, since at most one firing per frame is recorded,
+e.g. 5 MHz at a 200 ns shutter.
+
+An earlier version divided by ``frame_acq_time`` (a flat 9 µs under
+``short_exposure``) on the belief that this matched ``dapkel``. It does not:
+``dapkel`` divides by ``nframes * n_files * acq_window``, so the live view read
+``shutter / 9 µs`` of the number the same data gives offline.
+
+One difference from ``dapkel`` remains, and it is deliberate: ``frames`` here
+is the number of frames that *carried data*, not the number requested. See
+"Every frame is counted" above — a pass that begins with idle frames would
+otherwise dim the whole map. ``dapkel`` divides by the requested ``nframes``,
+so on a pass with idle frames its rate is the lower of the two by that
+fraction.
+
+Nothing here reads ``frame_rate_cnt.txt``. That counter was the timestamp
+mode's normalisation and it is not a frame period; see 'functions.timing' for
+why, in numbers.
 
 This file can also be imported as a module and contains the following
 functions:
@@ -70,14 +89,19 @@ functions:
 
     * frames_in_file - frame slots in a '.bin', from its size.
 
+    * independent_frames - leading frames of a '.bin' that are not a replay of
+    earlier ones (see REPLAY_BLOCK_FRAMES).
+
+    * tail_is_replay - whether everything past a known frame count replays
+    earlier frames.
+
     * valid_frame_mask - per-frame flags marking the frames that carry data.
 
     * accumulate_hitmap - decode a '.bin' in chunks and reduce every frame it
     holds to a (32, 32) hitmap, using either mode.
 
-    * resolve_frame_period - the measured wall-clock frame period, or None.
-
-    * live_time_per_frame - live seconds per frame for the rate, per mode.
+    * live_time_per_frame - live (photon-sensitive) seconds per frame for the
+    rate, and its unit.
 
     * photon_rate - turn an accumulated hitmap into a rate map.
 
@@ -91,6 +115,11 @@ import os
 
 import numpy as np
 
+from dapkel_rtp.functions.timing import (
+    FIRMWARE_SHORT_EXPOSURE,
+    FRAME_READOUT_S,
+    resolve_frame_acq_time,
+)
 from dapkel_rtp.functions.unpack import unpack
 
 # Bytes per frame in a Kelpie v2 '.bin' file: 4 * 64 * 8 (see unpack()).
@@ -98,17 +127,6 @@ BYTES_PER_FRAME = 4 * 64 * 8
 
 # 32-bit words per frame — the granularity the idle pattern repeats at.
 WORDS_PER_FRAME = BYTES_PER_FRAME // 4
-
-CLK_PERIOD = 5e-9  # 200 MHz clock -> 5 ns per tick
-
-# Physical bounds used only to sanity-check the *measured* frame period from
-# frame_rate_cnt.txt, never to stand in for it: a frame cannot be shorter than
-# the exposure it contains, nor than the readout that follows it (~9 µs,
-# whether the firmware adds that to the exposure or fits the exposure inside a
-# fixed ~9 µs period). A counter left over from another run, or counting
-# something other than this acquisition, lands outside these and is rejected.
-_READOUT_FLOOR_S = 9e-6
-_PERIOD_CEILING_S = 1.0
 
 # The two reductions, named as in dapkel.functions.hitmap_analysis.
 MODE_COUNT = "count"
@@ -118,6 +136,24 @@ MODE_TIMESTAMP = "timestamp"
 # only bounds how many are held in memory at once (a chunk costs roughly
 # 16 MB of decoded output), so an acquisition of any length is affordable.
 CHUNK_FRAMES = 2000
+
+# The exe's DDR3 readout is quantised to 16 MiB blocks, so a '.bin' holds
+# 8192 * ceil(nframes / 8192) frame slots -- always at least as many as the
+# acquisition asked for, usually more. What sits in those extra slots is NOT
+# extra data: measured over every dataset on the group's drive (2026-06-29
+# through 2026-08-03, count and timestamp programs, internal and external
+# trigger), slots at or past 'nframes' are a *byte-exact replay* of the slots
+# 8192 earlier. A 10 000-frame run yields 16 384 slots whose last 6 384 are
+# slots 1808..8191 repeated verbatim; 'SPDC_ORT1.bin' holds 10 000 distinct
+# frames and 6 384 copies. Reading past 'nframes' therefore accumulates the
+# same frames twice -- it does not recover anything the run left behind.
+#
+# Calibrated on files of one and two blocks (8192 and 16 384 slots). A run
+# needing three or more blocks has never been taken, so whether the replay
+# offset stays at 8192 there is untested; 'independent_frames' measures the
+# boundary rather than assuming it, so it degrades to "no replay found"
+# instead of guessing.
+REPLAY_BLOCK_FRAMES = 16 * 1024 * 1024 // BYTES_PER_FRAME  # 8192
 
 
 def mode_for_program(program: str) -> str:
@@ -147,9 +183,12 @@ def mode_for_program(program: str) -> str:
 def frames_in_file(filepath: str) -> int:
     """Return the number of whole frame slots a '.bin' file has room for.
 
-    NOTE: this is the size of the DDR3 dump, not the number of frames that
-    hold data — the file is a fixed-size buffer. Use 'valid_frame_mask' for
-    the frames that actually carry data.
+    NOTE: this is the size of the DDR3 dump, not the number of frames the
+    acquisition recorded — the readout is quantised to 16 MiB blocks, and the
+    slots past the requested frame count are a replay of earlier ones (see
+    REPLAY_BLOCK_FRAMES). Never infer a frame count from this: use the
+    'nframes' the run was asked for, 'independent_frames' to measure where the
+    replay starts, or 'valid_frame_mask' for the frames carrying data.
 
     Parameters
     ----------
@@ -164,13 +203,138 @@ def frames_in_file(filepath: str) -> int:
     return os.path.getsize(filepath) // BYTES_PER_FRAME
 
 
+def _read_frames(filepath: str, start: int, count: int) -> np.ndarray:
+    """Read ``count`` frames from ``start`` as a (count, BYTES_PER_FRAME) view."""
+    raw = np.fromfile(
+        filepath,
+        dtype=np.uint8,
+        count=count * BYTES_PER_FRAME,
+        offset=start * BYTES_PER_FRAME,
+    )
+    return raw.reshape(-1, BYTES_PER_FRAME)
+
+
+def independent_frames(
+    filepath: str,
+    block_frames: int = REPLAY_BLOCK_FRAMES,
+    chunk_frames: int = CHUNK_FRAMES,
+) -> int:
+    """Return the number of leading frames that are not a replay of earlier ones.
+
+    Measures where the readout's block-quantisation replay starts (see
+    REPLAY_BLOCK_FRAMES) rather than assuming it: a frame is a replay when it
+    is byte-identical to the frame ``block_frames`` before it, and the answer
+    is one past the *last* frame that is not. Scanning to the last mismatch
+    rather than stopping at the first match matters for dark count-mode data,
+    where unrelated frames are often identical by chance and an early match
+    would cut the file short.
+
+    Costs one pass over the file with flat memory, no decoding. Returns the
+    slot count unchanged when the file is one block or shorter, since a replay
+    cannot arise there — such a file's untouched tail is dead rather than
+    duplicated, which 'valid_frame_mask' handles.
+
+    This is a lower bound, not an exact frame count, and it can fall a few
+    frames short: in dark count-mode data whole frames repeat by chance, so if
+    the run's last frames happen to equal their counterparts one block back
+    they are indistinguishable from replay. Measured at 9 996 on a 10 000-frame
+    ``DCR_19V_S0C1.bin`` against an exact 10 000 on the timestamp files. It
+    never over-reads, which is the direction that matters — use 'tail_is_replay'
+    when the requested 'nframes' is known and an exact answer is wanted.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the '.bin' file.
+    block_frames : int, optional
+        Replay offset in frames. The default is 'REPLAY_BLOCK_FRAMES'.
+    chunk_frames : int, optional
+        Frames compared at a time; affects memory only. The default is
+        'CHUNK_FRAMES'.
+
+    Returns
+    -------
+    int
+        Frames before the replay begins — the frame count the acquisition
+        actually delivered, when the run's own 'nframes' is not recorded.
+    """
+    slots = frames_in_file(filepath)
+    block = int(block_frames)
+    if slots <= block or block < 1:
+        return slots
+
+    # Nothing past the first block has been shown fresh yet, so the floor is
+    # the block itself: a wholly-replayed tail means the run wrote 'block'
+    # frames and the readout repeated them.
+    last_fresh = block - 1
+    step = max(1, int(chunk_frames))
+    for start in range(block, slots, step):
+        stop = min(start + step, slots)
+        here = _read_frames(filepath, start, stop - start)
+        before = _read_frames(filepath, start - block, stop - start)
+        fresh = np.flatnonzero(~(here == before).all(axis=1))
+        if fresh.size:
+            last_fresh = start + int(fresh[-1])
+    return last_fresh + 1
+
+
+def tail_is_replay(
+    filepath: str,
+    nframes: int,
+    block_frames: int = REPLAY_BLOCK_FRAMES,
+    chunk_frames: int = CHUNK_FRAMES,
+) -> bool | None:
+    """Check that everything past frame ``nframes`` replays earlier frames.
+
+    The exact form of the check 'independent_frames' can only approximate,
+    for when the frame count the run was asked for is known: are slots
+    ``nframes..`` byte-identical to the slots ``block_frames`` before them?
+    True confirms the file holds ``nframes`` frames of data and nothing more;
+    False means the tail is something else and should be looked at before it
+    is trusted or discarded.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the '.bin' file.
+    nframes : int
+        Frames the acquisition was asked for.
+    block_frames : int, optional
+        Replay offset in frames. The default is 'REPLAY_BLOCK_FRAMES'.
+    chunk_frames : int, optional
+        Frames compared at a time; affects memory only. The default is
+        'CHUNK_FRAMES'.
+
+    Returns
+    -------
+    bool | None
+        Whether the tail is a replay, or None when there is no tail to check
+        (the file holds no more than ``nframes`` frames) or it starts before
+        one full block, where the offset would read off the front of the file.
+    """
+    slots = frames_in_file(filepath)
+    block = int(block_frames)
+    n = int(nframes)
+    if slots <= n or n < block or block < 1:
+        return None
+
+    step = max(1, int(chunk_frames))
+    for start in range(n, slots, step):
+        stop = min(start + step, slots)
+        here = _read_frames(filepath, start, stop - start)
+        before = _read_frames(filepath, start - block, stop - start)
+        if not np.array_equal(here, before):
+            return False
+    return True
+
+
 def valid_frame_mask(
     filepath: str, nframes: int, start_frame: int = 0
 ) -> np.ndarray:
     """Flag the frames of a '.bin' that carry data.
 
     A frame is *dead* when all of its 512 words are identical: that covers
-    both the all-zero slots the acquisition never wrote and the constant
+    both the all-zero slots the run never wrote and the constant
     idle pattern the chip emits before data starts flowing. Real frames,
     dark ones included, always vary word to word, so nothing measured is
     thrown away.
@@ -287,86 +451,66 @@ def accumulate_hitmap(
     return hitmap, frames, read
 
 
-def resolve_frame_period(
-    folder: str, nframes: int, exposure: float
-) -> tuple[float | None, str]:
-    """Return the measured wall-clock frame period, or None with a reason.
-
-    The exe writes the tick count for the acquisition to
-    ``frame_rate_cnt.txt``; divided by the frame count that is the measured
-    period, as 'dcr_analysis._resolve_frame_time' reads it. Nothing is
-    substituted when it is missing or fails the consistency check described
-    at ``_READOUT_FLOOR_S`` — the caller then reports no rate instead of a
-    modelled one.
-
-    Parameters
-    ----------
-    folder : str
-        Folder holding the acquisition (where ``frame_rate_cnt.txt`` lands).
-    nframes : int
-        Frames the acquisition was asked for — the tick count covers all of
-        them, including the ones that carried no data.
-    exposure : float
-        Exposure per frame, in seconds, for the consistency check.
-
-    Returns
-    -------
-    tuple[float | None, str]
-        The measured frame period in seconds and a short source label, or
-        None and the reason it could not be used.
-    """
-    cnt_file = os.path.join(folder, "frame_rate_cnt.txt")
-    try:
-        with open(cnt_file) as fh:
-            ticks = int(fh.read().strip())
-    except (OSError, ValueError):
-        return None, "no frame_rate_cnt.txt"
-    if ticks <= 0 or nframes <= 0:
-        return None, "frame_rate_cnt.txt empty"
-
-    period = ticks * CLK_PERIOD / nframes
-    if period > _PERIOD_CEILING_S or period < max(exposure, _READOUT_FLOOR_S):
-        return None, f"frame_rate_cnt.txt implausible ({period * 1e6:.3g} µs)"
-    return period, f"{period * 1e6:.4g} µs frame (measured)"
-
-
 def live_time_per_frame(
-    mode: str, exposure: float, folder: str, nframes: int
+    mode: str, firmware_version: str, open_shutter_time_s: float
 ) -> tuple[float | None, str, str]:
     """Return (live seconds per frame, rate unit, source) for a mode.
 
-    ``MODE_COUNT`` accumulates photons only while the pixel is exposed, so
-    the live time is the exposure the GUI set and the rate is in cps.
-    ``MODE_TIMESTAMP`` records at most one firing per frame, so its live time
-    is the measured wall-clock frame period and the rate is a firing rate in
-    Hz (see the module docstring).
+    The *live* time is the part of a frame a pixel can see a photon in, which
+    is what ``dapkel`` divides by (``acq_window``, see
+    'dapkel.core.timing.resolve_live_time'): the open shutter under
+    ``short_exposure``, where the rest of the fixed 9 µs frame is readout, and
+    the whole ``shutter + 9 µs`` frame under ``long_exposure``.
+
+    Both modes divide by the same thing, so the two are comparable with each
+    other and with ``dapkel``. Only the unit differs: ``MODE_COUNT`` sums
+    photons so its rate reads as cps, ``MODE_TIMESTAMP`` records at most one
+    firing per frame so its rate is a firing rate in Hz, saturating at
+    ``1 / live_per_frame``.
 
     Parameters
     ----------
     mode : str
         'MODE_COUNT' or 'MODE_TIMESTAMP'.
-    exposure : float
-        Exposure per frame, in seconds.
-    folder : str
-        Acquisition folder, for ``frame_rate_cnt.txt`` in timestamp mode.
-    nframes : int
-        Frames the acquisition was asked for, for the same.
+    firmware_version : str
+        'short_exposure' or 'long_exposure'.
+    open_shutter_time_s : float
+        Shutter-open seconds within one frame — the exposure register times the
+        clock tick.
 
     Returns
     -------
     tuple[float | None, str, str]
-        Live seconds per frame (None when it is not known — a zero exposure,
-        or no usable measured frame period — in which case the caller shows
-        the counted map instead of a rate), the rate unit, and a short
-        human-readable source.
+        Live seconds per frame, the rate unit, and a short human-readable
+        source. The seconds are None when there is nothing trustworthy to
+        divide by — an unknown firmware version, or a zero shutter under
+        ``short_exposure`` — and the caller then shows the counted map instead
+        of a rate.
     """
-    if mode == MODE_COUNT:
-        if not exposure > 0:
-            return None, "cps", "no exposure set"
-        return exposure, "cps", f"{exposure * 1e6:.4g} µs exposure"
-
-    period, source = resolve_frame_period(folder, nframes, exposure)
-    return period, "Hz", source
+    unit = "cps" if mode == MODE_COUNT else "Hz"
+    shutter = float(open_shutter_time_s)
+    if firmware_version == FIRMWARE_SHORT_EXPOSURE:
+        if shutter <= 0:
+            # Register 0 still returns counts (see 'functions.timing'), so the
+            # true window is not zero -- but it is unknown, and inventing a
+            # default would put a wrong number on the screen.
+            return (
+                None,
+                unit,
+                "short_exposure: shutter is 0, live time unknown",
+            )
+        return (
+            shutter,
+            unit,
+            f"short_exposure: {shutter * 1e9:.0f} ns shutter open in a fixed "
+            f"{FRAME_READOUT_S * 1e6:.0f} µs frame",
+        )
+    try:
+        frame_s, source = resolve_frame_acq_time(firmware_version, shutter)
+    except ValueError as exc:
+        return None, "", str(exc)
+    # long_exposure: the whole frame is live, so its length is the live time.
+    return frame_s, unit, source
 
 
 def photon_rate(

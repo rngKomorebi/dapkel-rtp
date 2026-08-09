@@ -26,9 +26,14 @@ What this module adds over the offline version is what the live app needs:
       code) exactly, at a fixed ~64 kB;
 
     * the same structural dead-frame rejection the live hitmap uses
-      ('hitmap.valid_frame_mask'), so the fixed-size DDR3 dump's unwritten
-      slots and the chip's pre-acquisition idle pattern are not counted as
-      frames that failed to record timing;
+      ('hitmap.valid_frame_mask'), so the slots the run never wrote and the
+      chip's pre-acquisition idle pattern are not counted as frames that
+      failed to record timing;
+
+    * a range that stops where the run's own frames stop. The readout writes
+      more slots than were asked for and fills the surplus by replaying
+      frames already in the file, so 'examine the whole file' would
+      histogram real measurements twice (see 'hitmap.REPLAY_BLOCK_FRAMES');
 
     * the program tag read off the file name, because the check only means
       anything for a *timestamp* program. In a ``*C`` (count) program the
@@ -69,6 +74,7 @@ from dapkel_rtp.functions.hitmap import (
     MODE_COUNT,
     MODE_TIMESTAMP,
     frames_in_file,
+    independent_frames,
     mode_for_program,
     valid_frame_mask,
 )
@@ -313,9 +319,12 @@ def collect_time_codes(
     filepath : str
         Path to the '.bin' file to check.
     nframes : int | None, optional
-        Frames to examine from the start of the file. When None (default)
-        every frame slot the file holds is examined. Never reads past the end
-        of the file.
+        Frames to examine from the start of the file. When None (default) the
+        range is measured with 'hitmap.independent_frames' instead of taking
+        every slot the file holds — the readout writes more slots than the run
+        asked for and fills the surplus by replaying earlier frames, so
+        examining the whole file would histogram those frames twice. Never
+        reads past the end of the file.
     pixel : tuple[int, int] | None, optional
         A single ``(row, col)`` pixel to histogram. When None (default) the
         codes of all 32x32 pixels are pooled.
@@ -334,8 +343,9 @@ def collect_time_codes(
         ``hist`` (int64 counts indexed by TDC code), ``pixel_valid``
         ((32, 32) int64 count of valid codes per pixel, always over the whole
         array even when one pixel was histogrammed), ``frames_read``,
-        ``frames_with_data``, ``frames_in_file``, ``pixel``, ``filepath`` and
-        ``aborted``.
+        ``frames_with_data``, ``frames_in_file`` (slots, not a frame count),
+        ``frames_limit`` and ``frames_limit_source`` (how far the walk was
+        allowed to go, and why), ``pixel``, ``filepath`` and ``aborted``.
 
     Raises
     ------
@@ -352,7 +362,20 @@ def collect_time_codes(
         pixel = (row, col)
 
     slots = frames_in_file(filepath)
-    read = slots if nframes is None else min(int(nframes), slots)
+    if nframes is None:
+        # "Every frame the file holds" is the wrong answer: past the frame
+        # count the run asked for, the readout replays frames already in the
+        # file, and histogramming those counts real measurements twice. Measure
+        # where the replay starts instead.
+        read = independent_frames(filepath)
+        limit_source = (
+            f"measured: {read} of {slots} slots before the readout replay"
+            if read < slots
+            else f"all {slots} slots, no replay found"
+        )
+    else:
+        read = min(int(nframes), slots)
+        limit_source = f"requested {int(nframes)}"
     if read < 1:
         raise ValueError(
             f"{os.path.basename(filepath)} holds no whole "
@@ -407,6 +430,8 @@ def collect_time_codes(
         "frames_read": done,
         "frames_with_data": frames_with_data,
         "frames_in_file": slots,
+        "frames_limit": read,
+        "frames_limit_source": limit_source,
         "pixel": pixel,
         "filepath": filepath,
         "aborted": aborted,
@@ -665,8 +690,9 @@ def format_report(summary: dict) -> str:
 
     n = summary["n_codes"]
     read = summary["frames_read"]
-    slots = summary["frames_in_file"]
     with_data = summary["frames_with_data"]
+    limit = summary.get("frames_limit", summary["frames_in_file"])
+    why = summary.get("frames_limit_source", "")
 
     if n:
         spread = (
@@ -679,7 +705,8 @@ def format_report(summary: dict) -> str:
 
     lines = [
         f"file     {os.path.basename(summary['filepath'])}  ·  {which}",
-        f"frames   {read} of {slots} examined, {with_data} carried data"
+        f"frames   {read} of {limit} examined, {with_data} carried data"
+        + (f"  ({why})" if why else "")
         + ("   [ABORTED]" if summary["aborted"] else ""),
         f"codes    {n:,} valid from {where}, {summary['unique']} unique "
         f"(occupancy {summary['occupancy']:.3g} per pixel-frame)",

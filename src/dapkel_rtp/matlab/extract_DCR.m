@@ -1,6 +1,34 @@
 currentFolder = pwd;
 
 % =============================================================================
+% WARNING — this script's frame period is wrong, and it has NOT been "fixed"
+% =============================================================================
+% Left exactly as the group runs it, deliberately: this is a reference copy, not
+% a maintained part of the app. Two problems, both in the block below.
+%
+% 1. FACTOR OF nframes. Line ~16 treats frame_rate_cnt as ticks *per frame*:
+%       exp_time_per_frame = frame_rate_cnt(1) * clk_period
+%    It is the tick count for the whole acquisition, so the period is
+%    frame_rate_cnt / nframes * clk_period. As written, 19370138 reads as
+%    96.85 ms per frame instead of 9.685 us -- 10 000x too long, which makes
+%    every DCR here 10 000x too small. dapkel/core/timing.py divides; the ports
+%    extract_dcr.py and dcr_hitmap.py do not, and share this error.
+%
+% 2. THE COUNTER IS NOT A FRAME PERIOD AT ALL. Across the group's drive
+%    frame_rate_cnt.txt holds 11 distinct values, is overwritten by every
+%    acquisition so only the last survives, and does not track the exposure
+%    register coherently: a clean 50/100/200/500 ns sweep read 9.700, 9.710,
+%    9.700 and 9.770 us per frame -- not monotonic. One live-view folder's value
+%    implies ~8300 frames for a file holding ~500.
+%
+% The app now states the frame length from the firmware instead:
+%    short_exposure -> 9 us fixed;  long_exposure -> shutter + 9 us
+% (see functions/timing.py, and the frame_acq_time_s key in metadata.json).
+% Decide what to do with this script and its two Python ports; nothing was
+% changed here on your behalf.
+% =============================================================================
+
+% =============================================================================
 % Parameters — adjust as needed
 % =============================================================================
 folder   = "./test_timing_matlab/";
