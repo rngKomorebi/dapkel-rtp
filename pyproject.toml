@@ -42,4 +42,9 @@ where = ["src"]
     # version by the directory it is launched from (see gui/gui/_paths.py).
     "params/camera/short_exposure/bitfile/*.bit",
     "params/camera/long_exposure/bitfile/*.bit",
+    # The rendered application icon. The SVG it is drawn from and the
+    # 1024 px master rendered from that both stay in "assets", and are
+    # deliberately not shipped.
+    "resources/*.png",
+    "resources/*.ico",
 ]

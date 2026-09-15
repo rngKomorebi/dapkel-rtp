@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-15
+
+### Added
+
+- An application icon, in every size Qt and Windows actually ask for. The
+  artwork is drawn once at 1024 px (`assets/dapkel-rtp-icon.svg`, and the
+  browser render of it beside it); `tools/make_icons.py` resamples that into
+  `src/dapkel_rtp/resources` as six PNGs (16/32/48/64/128/256) and a `.ico`
+  carrying seven. Qt is handed the whole set rather than one large image
+  because it scales whatever it is given, and a 16 px title-bar icon
+  downscaled on the fly from 1024 px arrives as a smudge. The rendered files
+  are committed on purpose: the release build has no image library available
+  to it and renders nothing itself, so re-run the script after the artwork
+  changes and commit what it writes.
+- `gui/app_icon.py`, which also claims an "application user model ID"
+  (`cvut.fjfi.dapkel-rtp`) before the first window exists. Without that claim a
+  Python process inherits the interpreter's identity, so the window showed our
+  icon while the taskbar button showed Python's — and grouped with every other
+  PyQt application running. It is a no-op off Windows, where the desktop
+  matches a window to its launcher by the class name Qt already sets.
+- `hitmap.peak_occupancy` — the fraction of frames the single busiest pixel
+  fired in, with that pixel's row and column. This is the one number that says
+  whether the rate map still means what it looks like: the readout reports at
+  most one firing per macropixel per frame, so a bright pixel's response
+  compresses long before it pins, and doubling the light raises the shown rate
+  by 98% at an occupancy of 0.02 but only 10% at 0.90. Nothing is corrected and
+  no threshold is defined here — where linearity stops being good enough is a
+  judgement about the measurement, not a property of the data.
+- The pixel's coordinates come back with the fraction because the fraction
+  alone cannot tell the two cases apart. High occupancy inside the beam spot
+  means the shutter is too long for the signal; the same figure on a lone pixel
+  out in the dark field is a hot pixel, and shortening the shutter for its sake
+  would only throw signal away. The operator reads the coordinates against the
+  map and decides.
+- `widgets.TimedProgressBar` (with `format_duration`), a progress bar that
+  carries elapsed and estimated-remaining time and paints its own text — dark
+  over the filled chunk, light over the empty groove, because no single colour
+  is readable over both. Used by the acquisition, chain and data-quality tabs.
+
+### Changed
+
+- Live View states the peak occupancy in timestamp mode, as a bare number with
+  no word judging it. A label like "saturating" reads as "pinned" when 64% is
+  not. Count mode does not show it: there the hitmap sums real counts up to the
+  9-bit field's limit, so the ratio would be a fraction of nothing.
+- The three progress bars no longer pin their own height. They are sized from
+  `TimedProgressBar._MIN_HEIGHT`, which follows the bar's font; the fixed 18/22
+  px clipped the text once that font grew. The bar's font is now three points
+  above the other monospaced widgets — it is the one readout watched from
+  across the room during a run that takes minutes, and it has a whole line to
+  itself.
+- The chain tab runs one clock for the whole chain rather than per job, since
+  the number someone waiting on it wants is when the *chain* ends.
+- `main()` can be called more than once in an interpreter that outlives it — a
+  notebook, the VS Code interactive window. The QApplication and window are
+  module globals rather than locals, because dropping them at return destroys
+  the two in an order Qt does not survive: the second run died inside Qt with
+  an access violation, no traceback, just "the kernel died". The event loop is
+  entered on every call unless something else is already spinning one, which is
+  only true under `%gui qt`; deciding that from "does a QApplication already
+  exist" was wrong, because after the first run one always does, and the window
+  then came up blank and dead.
+- The icon is set on the QApplication rather than the window, so every
+  top-level window inherits it, message boxes included.
+- `main.spec` stamps the `.ico` into the executable, so a downloaded build
+  carries the icon in Explorer, on the desktop and in Alt-Tab before it is ever
+  run, and bundles the PNGs explicitly — they are read by name through
+  `importlib.resources` and never imported, so PyInstaller's analysis cannot
+  see them. `pyproject.toml` and a new `MANIFEST.in` ship the same files in the
+  wheel and sdist. The 1024 px master and the SVG stay in `assets` and are
+  deliberately not shipped.
+- The icon artwork has no wordmark and fills its own canvas, both for the
+  taskbar. At 16 px the wordmark resampled to an illegible smear across the
+  bottom third and crowded the sensor grid — the only part that still reads at
+  that size — into the top. Separately, the tile drew 30 px in a 32 px taskbar
+  slot against a full 32 for VS Code and Paint, because a transparent margin
+  baked into artwork is margin Windows still counts as part of the icon; the
+  SVG's viewBox is cropped to the tile for that reason. The 5x4 matrix of large
+  cells replaced an 8x6 of small ones for the same reason in a different guise:
+  the tile is darker than the taskbar itself, so the squircle has no silhouette
+  and only the lit cells register as the icon at all. Measured on a #1f1f1f
+  taskbar, that roughly doubled the share of the slot that actually glows.
+  Shrinking the cells or restoring the outer margin would undo it.
+
+### Removed
+
+- The live view's repaint-rate readout. The preview refreshes a few times a
+  second, each pass a whole acquisition plus its decode, and stating that next
+  to the word "frame" — which here means a 9 µs camera frame, i.e. 111 kfps —
+  put two numbers four orders of magnitude apart under one name and helped
+  nobody read the map. The hitmap count is shown instead.
+
 ## [0.2.0] - 2026-08-09
 
 ### Investigated: a `.bin` holds more frame slots than the run asked for

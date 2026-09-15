@@ -45,7 +45,6 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -66,7 +65,7 @@ from dapkel_rtp.functions.data_quality import (
 
 from ._paths import functions_dir
 from .style import AMBER, BG, CYAN, OUTLINE, RED, SURFACE_LOW, TEXT_DIM
-from .widgets import make_nframes_combo
+from .widgets import TimedProgressBar, make_nframes_combo
 from .worker import DataQualityWorker
 
 # Left border of the report block, by verdict. n/a and "no result yet" keep
@@ -268,8 +267,9 @@ class DataQualityTab(QWidget):
         root.addLayout(btn_row)
 
         # ---- Progress ----
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(22)
+        # Height comes from TimedProgressBar._MIN_HEIGHT, which is sized to the
+        # bar's own font; pinning it here clipped the text when that font grew.
+        self.progress_bar = TimedProgressBar()
         root.addWidget(self.progress_bar)
 
         # ---- Report ----
@@ -421,7 +421,7 @@ class DataQualityTab(QWidget):
 
         self.run_btn.setEnabled(False)
         self.abort_btn.setEnabled(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.begin(os.path.basename(filepath))
         self.report_label.setText(f"Checking {os.path.basename(filepath)}…")
         self._style_report(None)
         self._t0 = time.perf_counter()
@@ -440,13 +440,16 @@ class DataQualityTab(QWidget):
 
     def _on_error(self, msg: str):
         self.abort_btn.setEnabled(False)
+        self.progress_bar.end("Stopped")
         self._on_selection_change(self.file_list.currentRow())
         self.report_label.setText(f"⚠  {msg}")
         self._style_report(None)
 
     def _on_finished(self, summary: dict):
         self.abort_btn.setEnabled(False)
-        self.progress_bar.setValue(100)
+        if not summary["aborted"]:
+            self.progress_bar.setValue(100)
+        self.progress_bar.end("Aborted" if summary["aborted"] else "Checked")
         self._on_selection_change(self.file_list.currentRow())
 
         self._summary = summary

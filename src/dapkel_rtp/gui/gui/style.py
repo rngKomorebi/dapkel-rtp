@@ -81,7 +81,13 @@ def apply_mpl_dark() -> None:
 def make_qss(base_fs: int = 15) -> str:
     """Return QSS with font sizes scaled to *base_fs* pixels."""
     _sm   = max(8, base_fs - 2)   # groupbox label / title
-    _mono = max(9, base_fs - 1)   # monospaced widgets (logs, spinboxes, progress)
+    _mono = max(9, base_fs - 1)   # monospaced widgets (logs, spinboxes)
+    # The progress bar runs three points above the other monospaced widgets. It
+    # is the one readout watched from across the room during a run that takes
+    # minutes, and it is a single line with a whole bar to itself, so there is
+    # room for it. TimedProgressBar._MIN_HEIGHT keeps the groove tall enough
+    # for this size.
+    _bar  = _mono + 3
     return f"""
 /* ── Global ─────────────────────────────────────────────────────────── */
 * {{
@@ -318,14 +324,18 @@ QCheckBox::indicator:hover {{
 }}
 
 /* ── Progress bar ────────────────────────────────────────────────────── */
+/* The text is not painted from here: one colour cannot be read over both the
+   cyan chunk and the empty groove, so widgets.TimedProgressBar paints it
+   itself, dark over the fill and light over the rest. Only the font set here
+   reaches it (Qt polishes the widget font from this rule). */
 QProgressBar {{
     background: {SURFACE};
     border: 1px solid {OUTLINE};
     border-radius: 2px;
     text-align: center;
-    color: {TEXT_DIM};
+    color: {TEXT};
     font-family: "JetBrains Mono", "Consolas", monospace;
-    font-size: {_mono}px;
+    font-size: {_bar}px;
 }}
 
 QProgressBar::chunk {{

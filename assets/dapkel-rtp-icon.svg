@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="22.5 22.5 467 467" width="512" height="512">
+  <!--
+    The viewBox is the tile's own bounds, not the 512 canvas it was drawn on:
+    24..488 for the rect, widened by half of its 3px stroke to 22.5..489.5.
+    The drawing keeps 512-space coordinates, so everything below still reads
+    against the numbers in its comments.
+
+    Why: a transparent margin baked into the artwork is margin Windows still
+    counts as part of the icon, so the tile drew 30px in a 32px taskbar slot
+    while VS Code and Paint drew a full 32. Cropping recovers those pixels.
+  -->
+  <defs>
+    <!-- Deep oceanic obsidian charcoal background tile -->
+    <linearGradient id="bgOceanKelpMaxNoDot" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#091817"/>
+      <stop offset="50%" stop-color="#050e0e"/>
+      <stop offset="100%" stop-color="#020505"/>
+    </linearGradient>
+
+    <!-- Vibrant glow for core active pixels -->
+    <filter id="pixelGlowMaxNoDot" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="15" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Modern squircle tile base -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgOceanKelpMaxNoDot)" stroke="#163935" stroke-width="3"/>
+
+  <!-- 
+    MAXIMIZED 5x4 SENSOR MATRIX - EXACTLY PRESERVED FROM IMAGE_2 EXCEPT WHITE DOT REMOVED:
+    Outer carrier frame: x=36, y=72, width=440, height=368, rx=26.
+    Pixels: 74x74 with 10px / 14px gaps and rx=12.
+    Col positions (x):
+      Col 0: 51
+      Col 1: 135
+      Col 2: 219
+      Col 3: 303
+      Col 4: 387
+    Row positions (y):
+      Row 0: 87
+      Row 1: 175
+      Row 2: 263
+      Row 3: 351
+  -->
+  <g id="camera-matrix-maximized">
+    <!-- Camera Sensor Active FOV frame carrier filling maximal area -->
+    <rect x="36" y="72" width="440" height="368" rx="26" fill="#0b1d1a" stroke="#134e44" stroke-width="3"/>
+
+    <!-- Row 0 (y = 87) -->
+    <!-- Col 0: background -->
+    <rect x="51" y="87" width="74" height="74" rx="12" fill="#0d2420"/>
+    <!-- Col 1: background/ambient -->
+    <rect x="135" y="87" width="74" height="74" rx="12" fill="#0f2b26"/>
+    <!-- Col 2: top plume of spot (teal/emerald) -->
+    <rect x="219" y="87" width="74" height="74" rx="12" fill="#2dd4bf" filter="url(#pixelGlowMaxNoDot)" opacity="0.95"/>
+    <!-- Col 3: background/ambient -->
+    <rect x="303" y="87" width="74" height="74" rx="12" fill="#0f2b26"/>
+    <!-- Col 4: background -->
+    <rect x="387" y="87" width="74" height="74" rx="12" fill="#0d2420"/>
+
+    <!-- Row 1 (y = 175) -->
+    <!-- Col 0: background -->
+    <rect x="51" y="175" width="74" height="74" rx="12" fill="#0d2420"/>
+    <!-- Col 1: left flank of spot (bright cyan) -->
+    <rect x="135" y="175" width="74" height="74" rx="12" fill="#38bdf8"/>
+    <!-- Col 2: upper core maximum (intense deep ocean navy with cyan border) -->
+    <rect x="219" y="175" width="74" height="74" rx="12" fill="#0369a1" stroke="#38bdf8" stroke-width="3.5" filter="url(#pixelGlowMaxNoDot)"/>
+    <!-- Col 3: right flank of spot (luminous teal) -->
+    <rect x="303" y="175" width="74" height="74" rx="12" fill="#2dd4bf"/>
+    <!-- Col 4: background -->
+    <rect x="387" y="175" width="74" height="74" rx="12" fill="#0d2420"/>
+
+    <!-- Row 2 (y = 263) -->
+    <!-- Col 0: SATELLITE HIT PIXEL from camera reference (ocean blue glow) -->
+    <rect x="51" y="263" width="74" height="74" rx="12" fill="#0284c7" stroke="#38bdf8" stroke-width="2.5" filter="url(#pixelGlowMaxNoDot)"/>
+    <!-- Col 1: lower-left halo -->
+    <rect x="135" y="263" width="74" height="74" rx="12" fill="#0284c7" opacity="0.9"/>
+    <!-- Col 2: CENTROID CORE (deep navy center with vibrant emerald frame - white dot removed) -->
+    <rect x="219" y="263" width="74" height="74" rx="12" fill="#082f49" stroke="#34d399" stroke-width="4" filter="url(#pixelGlowMaxNoDot)"/>
+    <!-- Col 3: lower-right flank (dark kelp blue) -->
+    <rect x="303" y="263" width="74" height="74" rx="12" fill="#082f49" stroke="#0ea5e9" stroke-width="2.5"/>
+    <!-- Col 4: background -->
+    <rect x="387" y="263" width="74" height="74" rx="12" fill="#0d2420"/>
+
+    <!-- Row 3 (y = 351) -->
+    <!-- Col 0: background -->
+    <rect x="51" y="351" width="74" height="74" rx="12" fill="#0d2420"/>
+    <!-- Col 1: background/ambient -->
+    <rect x="135" y="351" width="74" height="74" rx="12" fill="#0f2b26"/>
+    <!-- Col 2: bottom lobe of spot (ocean blue) -->
+    <rect x="219" y="351" width="74" height="74" rx="12" fill="#0284c7" opacity="0.95" filter="url(#pixelGlowMaxNoDot)"/>
+    <!-- Col 3: background/ambient -->
+    <rect x="303" y="351" width="74" height="74" rx="12" fill="#0f2b26"/>
+    <!-- Col 4: background -->
+    <rect x="387" y="351" width="74" height="74" rx="12" fill="#0d2420"/>
+  </g>
+</svg>
