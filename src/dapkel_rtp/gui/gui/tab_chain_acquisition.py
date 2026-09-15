@@ -21,7 +21,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -50,7 +49,7 @@ from .tab_acquisition import (
     SettingsDialog,
 )
 from .fpga_state import FPGA
-from .widgets import FRAMES_TIP_BLOCK, make_nframes_combo
+from .widgets import FRAMES_TIP_BLOCK, TimedProgressBar, make_nframes_combo
 from .worker import CLK_SHIFT, NBITS, AcquisitionWorker, PowerMgtWorker
 
 
@@ -437,9 +436,9 @@ class ChainAcquisitionTab(QWidget):
         root.addLayout(btn_row)
 
         # ---- Progress ----
-        self.chain_bar = QProgressBar()
-        self.chain_bar.setFixedHeight(18)
-        self.chain_bar.setFormat("Ready")
+        # Height comes from TimedProgressBar._MIN_HEIGHT, which is sized to the
+        # bar's own font; pinning it here clipped the text when that font grew.
+        self.chain_bar = TimedProgressBar()
         root.addWidget(self.chain_bar)
 
         # ---- Log ----
@@ -691,8 +690,9 @@ class ChainAcquisitionTab(QWidget):
         self._completed_jobs = 0
 
         self.chain_bar.setRange(0, self._total_jobs * 100)
-        self.chain_bar.setValue(0)
-        self.chain_bar.setFormat("Starting…")
+        # One clock for the whole chain: the estimate spans every job left,
+        # which is the number the user waiting on the chain wants.
+        self.chain_bar.begin(f"Job 1/{self._total_jobs}")
         self.pwr_btn.setEnabled(False)
         self.run_btn.setEnabled(False)
         self._add_btn.setEnabled(False)
@@ -848,8 +848,8 @@ class ChainAcquisitionTab(QWidget):
         self._worker.start()
 
     def _on_job_progress(self, pct: int, job_num: int, tag: str):
+        self.chain_bar.set_prefix(f"Job {job_num}/{self._total_jobs}  {tag}")
         self.chain_bar.setValue(self._completed_jobs * 100 + pct)
-        self.chain_bar.setFormat(f"Job {job_num}/{self._total_jobs}  {tag}  {pct}%")
 
     def _on_job_finished(self, success: bool, msg: str):
         self._log(("✓ " if success else "✗ ") + msg)
@@ -869,9 +869,12 @@ class ChainAcquisitionTab(QWidget):
         self._log("=" * 60)
         if success:
             self.chain_bar.setValue(self._total_jobs * 100)
-            self.chain_bar.setFormat(f"Done — {self._total_jobs} jobs")
+            self.chain_bar.end(f"Done — {self._total_jobs} jobs")
             self._log(f"✓ Chain complete — {self._total_jobs} jobs.")
         else:
+            self.chain_bar.end(
+                f"Stopped after {self._completed_jobs}/{self._total_jobs} jobs"
+            )
             self._log(
                 f"✗ Chain aborted after {self._completed_jobs}/{self._total_jobs} jobs."
             )

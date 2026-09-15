@@ -1,0 +1,5 @@
+include src/dapkel_rtp/functions/helpers/*.exe
+include src/dapkel_rtp/functions/helpers/*.dll
+recursive-include src/dapkel_rtp/params/camera *.txt *.bit
+include src/dapkel_rtp/resources/*.png
+include src/dapkel_rtp/resources/*.ico

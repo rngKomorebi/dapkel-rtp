@@ -1,5 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+# The icon Windows itself reads: the exe in Explorer, the desktop
+# shortcut, the Alt-Tab entry. Separate from the PNGs in 'datas' below,
+# which are what Qt draws once the application is running.
+ICON = os.path.join(SPECPATH, 'dapkel_rtp', 'resources', 'dapkel-rtp.ico')
+
 
 a = Analysis(
     ['main.py'],
@@ -13,6 +20,10 @@ a = Analysis(
         # stale preview data. No measurement file belongs in the exe: add
         # runtime dependencies here explicitly instead of widening this back to
         # the directory.
+        # The rendered icon sizes Qt is handed at runtime. PyInstaller
+        # cannot see them: they are read by name through
+        # importlib.resources, never imported.
+        ('dapkel_rtp/resources/*.png', 'dapkel_rtp/resources'),
         ('dapkel_rtp/functions/helpers/Kelpie_v2.exe', 'dapkel_rtp/functions/helpers'),
         ('dapkel_rtp/functions/helpers/Kelpie_v2_pwr_mgt.exe', 'dapkel_rtp/functions/helpers'),
         ('dapkel_rtp/functions/helpers/okFrontPanel.dll', 'dapkel_rtp/functions/helpers'),
@@ -60,6 +71,9 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
+    # Stamped into the executable, so the download carries the icon in
+    # Explorer and on the desktop before it is ever run.
+    icon=ICON,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

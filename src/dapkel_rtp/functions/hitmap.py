@@ -66,6 +66,23 @@ divide by the same thing, as in ``dapkel.functions.hitmap_analysis``:
 exceed ``1 / live_per_frame``, since at most one firing per frame is recorded,
 e.g. 5 MHz at a 200 ns shutter.
 
+That ceiling is a ceiling on the *number shown*, and it is not the same thing as
+the camera's own limit. The readout reports one timestamp per macropixel per
+frame, and under ``short_exposure`` the frame is a fixed 9 µs whatever the
+shutter does inside it (readout takes the remaining ``9 µs - shutter``), so the
+camera cannot deliver more than ``1 / 9 µs`` = 111 kHz of detections per
+macropixel however the shutter is set. The rate above is per second of *live*
+time, so it may legitimately read above 111 kHz — at a 200 ns shutter the
+detections are duty-cycled down by 200 ns / 9 µs, and 115 kHz of live-time rate
+is 2.6 kHz of wall-clock detections. The two differ by exactly that duty cycle.
+
+Where saturation does bite is the occupancy itself, and 'peak_occupancy' is what
+reports it: the map is linear in the light only while the busiest pixel fires in
+a small fraction of frames. Lengthening the shutter inside the fixed frame
+drives that fraction towards 1 without raising the camera's ceiling, so a long
+shutter reads a *lower* rate on a bright pixel than a short one does — the
+counts are censored at one per frame, and no choice of divisor undoes it.
+
 An earlier version divided by ``frame_acq_time`` (a flat 9 µs under
 ``short_exposure``) on the belief that this matched ``dapkel``. It does not:
 ``dapkel`` divides by ``nframes * n_files * acq_window``, so the live view read
@@ -104,6 +121,9 @@ functions:
     rate, and its unit.
 
     * photon_rate - turn an accumulated hitmap into a rate map.
+
+    * peak_occupancy - fraction of frames the busiest pixel fired in and where
+    that pixel is, which says whether the rate map is still linear in the light.
 
     * color_limits - the map's full (vmin, vmax), so every pixel including
     the hottest is shown as measured.
@@ -548,6 +568,77 @@ def photon_rate(
     return np.divide(
         hitmap, live_time, out=np.zeros_like(hitmap), where=live_time > 0
     )
+
+
+def peak_occupancy(
+    hitmap: np.ndarray, frames: np.ndarray | int
+) -> tuple[float, int, int] | None:
+    """Fraction of frames the busiest pixel fired in, and which pixel it is.
+
+    Only meaningful for ``MODE_TIMESTAMP``, where the hitmap is an occupancy:
+    one firing per frame is all the readout reports, so a pixel's count cannot
+    exceed the frames it was exposed for and this ratio is bounded by 1. (In
+    ``MODE_COUNT`` the hitmap sums real counts, which run to the 9-bit field's
+    limit, not to 1, so the ratio is not a fraction of anything.)
+
+    This is the one number that says whether the rate map still means what it
+    looks like, because the whole map's linearity is set by how far the busiest
+    pixel is from its ceiling. Double the light and the shown rate rises by 98%
+    at an occupancy of 0.02, by 70% at 0.30, by 36% at 0.64, by 10% at 0.90:
+    the frames a pixel already fired in cannot fire again, so its response
+    compresses long before it pins at 1.0 (where it reads a flat
+    ``1 / live_per_frame`` however bright the source gets).
+
+    No threshold is defined here and nothing is corrected — where the response
+    stops being linear enough is a judgement about the measurement being made,
+    not a property of the data. This is the measured count over the measured
+    frames and nothing else; callers report it and let the operator decide
+    whether to shorten the shutter.
+
+    The pixel's position is returned with the fraction because the fraction
+    alone does not say what is near its ceiling. A high occupancy on a pixel
+    inside the beam spot means the shutter is too long for the signal; the same
+    figure on a lone pixel out in the dark field is a hot pixel, and shortening
+    the shutter for its sake would only throw away signal. The caller can state
+    the coordinates and let the operator tell those two apart by eye against
+    the map.
+
+    Parameters
+    ----------
+    hitmap : np.ndarray
+        Accumulated occupancy, from 'accumulate_hitmap' in MODE_TIMESTAMP.
+    frames : np.ndarray | int
+        Frames that carried data, one number or per-pixel as in
+        'photon_rate' — the 64x64 mode's quadrants are each measured against
+        their own frame count rather than a common one.
+
+    Returns
+    -------
+    tuple[float, int, int] | None
+        ``(fraction, row, col)`` for the busiest pixel, or None when no frame
+        carried data. ``row``\\ /``col`` index ``hitmap`` directly, which is
+        also how the live view plots it (imshow with ``origin='lower'``, y
+        labelled Row and x labelled Column), so the pair reads straight off
+        the displayed axes. On a tie the first in row-major order is reported,
+        which keeps the readout stable between refreshes rather than hopping
+        between equally busy pixels — so on a map where nothing fired at all
+        the fraction is 0.0 and the coordinates are just the first pixel,
+        naming no real peak; callers should not show them in that case.
+    """
+    counted = np.asarray(hitmap, dtype=np.float64)
+    exposed = np.asarray(frames, dtype=np.float64)
+    if not np.any(exposed > 0):
+        return None
+    # Same zero guard as 'photon_rate': a quadrant that delivered nothing
+    # contributes 0 rather than a division by zero.
+    occupancy = np.divide(
+        counted,
+        exposed,
+        out=np.zeros_like(counted),
+        where=exposed > 0,
+    )
+    row, col = np.unravel_index(np.argmax(occupancy), occupancy.shape)
+    return float(occupancy[row, col]), int(row), int(col)
 
 
 def color_limits(data: np.ndarray) -> tuple[float, float]:

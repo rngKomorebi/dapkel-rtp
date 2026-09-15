@@ -22,6 +22,19 @@ Everything shown is counted out of the raw data, never modelled:
   mode reads as cps, timestamp mode as Hz, bounded by one firing per frame.
   Nothing is read out of frame_rate_cnt.txt: that counter is not a frame
   period, see dapkel_rtp.functions.timing.
+* timestamp mode also states the peak occupancy — the fraction of frames the
+  single busiest pixel fired in, with that pixel's Row/Column, not an array
+  average. It is the measured count over the measured frames, shown bare with
+  no word judging it, because the Hz alone cannot tell a bright pixel from one
+  that has run out of frames to fire in: high occupancy makes a long shutter
+  read a *lower* rate on a bright pixel than a short shutter does. The
+  coordinates say which case it is — in the beam spot, or a hot pixel alone in
+  the dark field. See 'peak_occupancy' in dapkel_rtp.functions.hitmap.
+
+No repaint rate is shown. The preview refreshes a few times a second, each pass
+a whole acquisition plus its decode, and stating that next to the word "frame" —
+which here means a 9 µs camera frame, i.e. 111 kfps — put two numbers four
+orders of magnitude apart under one name and helped nobody read the map.
 
 The loop keeps acquiring until Stop: a failed acquisition is reported and
 retried, never a reason to end the preview.
@@ -29,7 +42,6 @@ retried, never a reason to end the preview.
 
 import glob
 import os
-import time
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import (
@@ -58,6 +70,7 @@ from dapkel_rtp.functions.hitmap import (
     MODE_COUNT,
     color_limits,
     mode_for_program,
+    peak_occupancy,
     photon_rate,
 )
 
@@ -118,8 +131,6 @@ class LiveViewTab(QWidget):
         }
         self._exe_dir = functions_dir()
         self._frame_count = 0
-        self._last_frame_time: float | None = None
-        self._fps = 0.0
         # Cached plot artists; rebuilt only on shape/canvas-size change so a
         # window resize (or fullscreen) doesn't force a full rebuild+double
         # redraw on every single incoming frame.
@@ -518,8 +529,6 @@ class LiveViewTab(QWidget):
             }
 
         self._frame_count = 0
-        self._last_frame_time = None
-        self._fps = 0.0
         self._plot_shape = None  # force a clean rebuild for this run
         self.mode_combo.setEnabled(False)
         self.start_btn.setEnabled(False)
@@ -557,17 +566,6 @@ class LiveViewTab(QWidget):
             # run, so re-enable Start without forcing another Power Mgt call.
             self._on_program_change(self.program_combo.currentIndex())
         self.status_label.setText(f"Stopped after {self._frame_count} frame(s).")
-
-    def _update_fps(self):
-        now = time.perf_counter()
-        if self._last_frame_time is not None:
-            dt = now - self._last_frame_time
-            if dt > 0:
-                inst_fps = 1.0 / dt
-                self._fps = (
-                    inst_fps if self._fps == 0.0 else 0.8 * self._fps + 0.2 * inst_fps
-                )
-        self._last_frame_time = now
 
     def _rebuild_plot(
         self,
@@ -646,7 +644,6 @@ class LiveViewTab(QWidget):
         'hitmap_analysis' rate map plots.
         """
         self._frame_count += 1
-        self._update_fps()
 
         hitmap = payload["hitmap"]
         frames = payload["frames"]  # a number, or per-pixel in 64x64 mode
@@ -677,6 +674,29 @@ class LiveViewTab(QWidget):
         peak = float(data.max())
         step = self._rate_step(rate, frames, payload["live_per_frame"])
         frames_txt = self._frames_text(frames, frames_req)
+        # Only in timestamp mode is the hitmap an occupancy with a ceiling of
+        # one; count mode sums real counts, so the ratio would be a fraction
+        # of nothing. See 'peak_occupancy'.
+        occ = None if mode == MODE_COUNT else peak_occupancy(hitmap, frames)
+        # On the first line, not with the stats: the second line already runs
+        # close to the colourbar's exponent label. Stated as a bare number,
+        # with no word judging it -- where the response stops being linear
+        # enough for the work is the operator's call, not this tab's, and a
+        # label like 'saturating' reads as 'pinned' when 64% is not.
+        #
+        # The coordinates are what make the number actionable: read against the
+        # map, they say whether the busiest pixel is in the beam spot (the
+        # shutter is too long for the signal) or alone in the dark field (a hot
+        # pixel, and shortening the shutter would only cost signal). They are
+        # the plotted Row/Column, so they read off the axes as printed.
+        occ_txt = ""
+        if occ is not None:
+            frac, occ_row, occ_col = occ
+            occ_txt = f", peak {frac:.1%} of frames"
+            # A map where nothing fired has no busiest pixel -- 'peak 0.0% at
+            # row 0, col 0' would point at a pixel that did nothing to earn it.
+            if frac > 0:
+                occ_txt += f" at row {occ_row}, col {occ_col}"
         # Mean first: it is the only one of the three that does not move with
         # the frame count. See '_rate_step' for why the other two do.
         # The colourbar spans the full range, so it already shows the scale --
@@ -684,7 +704,7 @@ class LiveViewTab(QWidget):
         # the colourbar's exponent label).
         title = (
             f"Live hitmap #{self._frame_count}  {rows}×{cols}   "
-            f"{mode} mode   ({self._fps:.1f} fps)\n"
+            f"{mode} mode{occ_txt}\n"
             f"{frames_txt}  ·  mean {mean:.3g}{unit}  ·  "
             f"median {median:.3g}{unit}  ·  max {peak:.3g}{unit}"
         )
@@ -712,13 +732,24 @@ class LiveViewTab(QWidget):
 
         read = payload["frames_read"]
         status = (
-            f"Live, hitmap #{self._frame_count}, {self._fps:.1f} fps, "
+            f"Live, hitmap #{self._frame_count}, "
             f"{frames_txt}, {payload['live_source']}, "
             f"mean {mean:.3g}{unit}, median {median:.3g}{unit}, "
             f"max {peak:.3g}{unit}"
         )
         if step is not None:
             status += f", one count = {step:.3g}{unit}"
+        if occ is not None:
+            # Spelled out here where there is room: the title's "peak" is one
+            # named pixel's occupancy, not the array's and not a per-frame fill.
+            frac, occ_row, occ_col = occ
+            if frac > 0:
+                status += (
+                    f", pixel (row {occ_row}, col {occ_col}) fired in "
+                    f"{frac:.1%} of its frames"
+                )
+            else:
+                status += ", no pixel fired in any frame"
         if read < frames_req:
             status += f"  [only {read} frames in the file]"
         self.status_label.setText(status)

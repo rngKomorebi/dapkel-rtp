@@ -19,7 +19,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QTextEdit,
@@ -39,7 +38,7 @@ from ._paths import (
     resolve_pwr_mgt_cwd,
 )
 from .fpga_state import FPGA
-from .widgets import FRAMES_TIP_BLOCK, make_nframes_combo
+from .widgets import FRAMES_TIP_BLOCK, TimedProgressBar, make_nframes_combo
 from .worker import CLK_SHIFT, NBITS, AcquisitionWorker, PowerMgtWorker
 
 # Microseconds, for the spin boxes; functions.timing owns the value.
@@ -227,6 +226,10 @@ class AcquisitionTab(QWidget):
         super().__init__()
         self._worker: AcquisitionWorker | None = None
         self._pwr_worker: PowerMgtWorker | None = None
+        # Files the running acquisition asked for and has written so far --
+        # what the progress bar's text counts through.
+        self._nacq = 0
+        self._files_done = 0
         self._chip_state: dict = {
             "chip_debug": False,
             "chip_timing": True,
@@ -430,8 +433,9 @@ class AcquisitionTab(QWidget):
         root.addLayout(btn_row)
 
         # ---- Progress ----
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(22)
+        # Height comes from TimedProgressBar._MIN_HEIGHT, which is sized to the
+        # bar's own font; pinning it here clipped the text when that font grew.
+        self.progress_bar = TimedProgressBar()
         root.addWidget(self.progress_bar)
 
         # ---- Log ----
@@ -678,7 +682,9 @@ class AcquisitionTab(QWidget):
         self.firmware_combo.setEnabled(False)
         self.run_btn.setEnabled(False)
         self.abort_btn.setEnabled(True)
-        self.progress_bar.setValue(0)
+        self._nacq = params["nacq"]
+        self._files_done = 0
+        self.progress_bar.begin(f"file 1/{self._nacq}")
         self.log_edit.clear()
         meta = params["metadata"]
         self._log(
@@ -708,7 +714,7 @@ class AcquisitionTab(QWidget):
 
         self._worker = AcquisitionWorker(params)
         self._worker.log.connect(self._log)
-        self._worker.progress.connect(self.progress_bar.setValue)
+        self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
 
@@ -754,6 +760,17 @@ class AcquisitionTab(QWidget):
             self._worker.abort()
             self._log("Abort requested…")
 
+    def _on_progress(self, pct: int):
+        """One more file on disk: advance the bar and name the next one.
+
+        The worker emits after each file, so the count here is files finished;
+        the one now running is the next, unless that was the last.
+        """
+        self._files_done += 1
+        running = min(self._files_done + 1, self._nacq)
+        self.progress_bar.set_prefix(f"file {running}/{self._nacq}")
+        self.progress_bar.setValue(pct)
+
     def _on_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
         self.program_combo.setEnabled(True)
@@ -764,6 +781,12 @@ class AcquisitionTab(QWidget):
         self._log(("✓ " if success else "✗ ") + msg)
         if success:
             self.progress_bar.setValue(100)
+            self.progress_bar.end(f"{self._nacq} file(s) complete")
+        else:
+            # The value stays where it got to, so the text says how far.
+            self.progress_bar.end(
+                f"stopped after {self._files_done}/{self._nacq} file(s)"
+            )
 
     def _log(self, msg: str):
         self.log_edit.append(msg)
