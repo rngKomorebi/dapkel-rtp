@@ -64,17 +64,23 @@ from dapkel_rtp.functions.data_quality import (
 )
 
 from ._paths import functions_dir
-from .style import AMBER, BG, CYAN, OUTLINE, RED, SURFACE_LOW, TEXT_DIM
+from .theme import Theme, current_theme, theme_manager
 from .widgets import TimedProgressBar, make_nframes_combo
 from .worker import DataQualityWorker
 
-# Left border of the report block, by verdict. n/a and "no result yet" keep
-# the neutral outline colour: an unjudged file must not read as a passed one.
-_VERDICT_COLOR = {
-    VERDICT_PASS: CYAN,
-    VERDICT_SUSPECT: AMBER,
-    VERDICT_FAIL: RED,
+# Theme field for each verdict: the report block's left border and the
+# histogram title. n/a and "no result yet" fall back to a neutral colour: an
+# unjudged file must not read as a passed one.
+_VERDICT_FIELD = {
+    VERDICT_PASS: "ok",
+    VERDICT_SUSPECT: "warn",
+    VERDICT_FAIL: "error",
 }
+
+
+def _verdict_color(verdict: str | None, theme: Theme, neutral: str) -> str:
+    field = _VERDICT_FIELD.get(verdict)
+    return getattr(theme, field) if field else neutral
 
 _FRAMES_TIP = (
     "Frames to examine, from the start of the file.\n"
@@ -115,8 +121,10 @@ class DataQualityTab(QWidget):
         self._worker: DataQualityWorker | None = None
         self._files: list[dict] = []
         self._summary: dict | None = None  # last result, for a bins redraw
+        self._verdict: str | None = None  # what the report block shows
         self._t0 = 0.0
         self._build_ui()
+        theme_manager().changed.connect(self._apply_theme)
         default_folder = os.path.join(functions_dir(), "data")
         # The acquisition tabs create this on their first run; make it exist for
         # a first scan too. The release bundle used to ship the folder (and the
@@ -280,9 +288,10 @@ class DataQualityTab(QWidget):
         root.addWidget(self.report_label)
 
         # ---- Matplotlib toolbar + canvas ----
-        self.figure = Figure(tight_layout=True, facecolor=BG)
+        theme = current_theme()
+        self.figure = Figure(tight_layout=True, facecolor=theme.figure_bg)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.canvas.setStyleSheet(f"background: {BG}; border: none;")
+        self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
         # The list, the report block and the toolbar above it are all fixed
         # height, so without a floor the histogram is the only thing that
         # gives when the window is short -- and it is the point of the tab.
@@ -292,14 +301,31 @@ class DataQualityTab(QWidget):
         root.addWidget(self.canvas, stretch=1)
 
     def _style_report(self, verdict: str | None):
+        # Inline rather than a stylesheet rule, because the border follows the
+        # verdict; '_apply_theme' calls this again so it follows the theme too.
+        self._verdict = verdict
+        t = current_theme()
+        border = _verdict_color(verdict, t, t.outline)
         self.report_label.setStyleSheet(
             "font-family: 'JetBrains Mono', Consolas, monospace;"
-            f"color: {TEXT_DIM};"
-            f"background: {SURFACE_LOW};"
-            f"border: 1px solid {OUTLINE};"
-            f"border-left: 3px solid {_VERDICT_COLOR.get(verdict, OUTLINE)};"
+            f"color: {t.text_dim};"
+            f"background: {t.surface_low};"
+            f"border: 1px solid {t.outline};"
+            f"border-left: 3px solid {border};"
             "padding: 6px 10px;"
         )
+
+    def _apply_theme(self):
+        """Restyle for a theme just chosen: the report block, and the plot
+        redrawn from the result already in hand (as a bins change does)."""
+        theme = current_theme()
+        self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
+        self.figure.set_facecolor(theme.figure_bg)
+        self._style_report(self._verdict)
+        if self._summary is not None:
+            self._draw(self._summary)
+        else:
+            self.canvas.draw_idle()
 
     def _on_pixel_mode(self, idx: int):
         single = bool(self.pixel_combo.itemData(idx))
@@ -481,6 +507,7 @@ class DataQualityTab(QWidget):
         handful of pixels — and costs nothing, since 'unpack' decodes all
         1024 pixels either way.
         """
+        theme = current_theme()
         self.figure.clear()
         self.figure.set_tight_layout(True)
         ax, ax_map = self.figure.subplots(
@@ -491,7 +518,7 @@ class DataQualityTab(QWidget):
             summary["hist"], self.bins_spin.value()
         )
         if values.size:
-            ax.stairs(values, edges, fill=True, color=CYAN, alpha=0.75)
+            ax.stairs(values, edges, fill=True, color=theme.trace, alpha=0.75)
         else:
             ax.text(
                 0.5,
@@ -499,7 +526,7 @@ class DataQualityTab(QWidget):
                 "no valid timestamp in any frame",
                 ha="center",
                 va="center",
-                color=RED,
+                color=theme.error,
                 transform=ax.transAxes,
             )
         ax.set_xlabel("Timestamp  (TDC code)")
@@ -515,33 +542,33 @@ class DataQualityTab(QWidget):
             f"{os.path.basename(summary['filepath'])} — {where}\n"
             f"n={summary['n_codes']:,},  {summary['unique']} unique,  "
             f"{summary['verdict']}",
-            color=_VERDICT_COLOR.get(summary["verdict"], TEXT_DIM),
+            color=_verdict_color(summary["verdict"], theme, theme.axes_fg),
         )
         for spine in ax.spines.values():
-            spine.set_edgecolor(OUTLINE)
+            spine.set_edgecolor(theme.axes_edge)
 
         valid = summary["pixel_valid"].astype(np.float64)
         vmax = float(valid.max())
         im = ax_map.imshow(
             valid,
-            cmap="gray",
+            cmap=theme.colormap,
             aspect="equal",
             origin="lower",
             vmin=0.0,
             vmax=vmax if vmax > 0 else 1.0,
         )
         cb = self.figure.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
-        cb.ax.tick_params(colors=TEXT_DIM)
-        cb.outline.set_edgecolor(OUTLINE)
+        cb.ax.tick_params(colors=theme.axes_fg)
+        cb.outline.set_edgecolor(theme.axes_edge)
         ax_map.set_title(
             f"Valid timestamps / pixel\n"
             f"{summary['pixels_live']}/{summary['pixels_total']} pixels",
-            color=TEXT_DIM,
+            color=theme.axes_fg,
         )
         ax_map.set_xlabel("Column")
         ax_map.set_ylabel("Row")
         ax_map.grid(False)
         for spine in ax_map.spines.values():
-            spine.set_edgecolor(OUTLINE)
+            spine.set_edgecolor(theme.axes_edge)
 
         self.canvas.draw_idle()

@@ -30,7 +30,8 @@ from PyQt5.QtWidgets import QApplication
 
 from dapkel_rtp.gui.app_icon import app_icon, claim_taskbar_identity
 from dapkel_rtp.gui.gui.main_window import MainWindow
-from dapkel_rtp.gui.gui.style import apply_mpl_dark, apply_qss
+from dapkel_rtp.gui.gui.style import apply_mpl_theme, apply_qss
+from dapkel_rtp.gui.title_bar import install_dark_title_bars
 
 
 # The QApplication and the window live here, not in main()'s locals, and the
@@ -79,8 +80,8 @@ def main():
     """
     global _APP, _WINDOW
 
-    # Apply matplotlib dark colours BEFORE any Figure is created
-    apply_mpl_dark()
+    # Apply the theme's matplotlib colours BEFORE any Figure is created
+    apply_mpl_theme()
 
     # Before the QApplication, and so before any window exists: this is
     # what tells Windows which taskbar button the process owns, and it is
@@ -94,6 +95,8 @@ def main():
     # opens inherits it -- the dialogs included.
     _APP.setWindowIcon(app_icon())
     apply_qss(_APP)
+    # Before the first window is shown, so it never appears with a light bar.
+    install_dark_title_bars(_APP)
 
     if _WINDOW is not None:
         # Through closeEvent, so a run left over from the previous call stops

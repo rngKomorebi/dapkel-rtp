@@ -40,7 +40,6 @@ from ._paths import (
     programs_dir,
     resolve_pwr_mgt_cwd,
 )
-from .style import OUTLINE, SURFACE_LOW, TEXT_DIM
 from .tab_acquisition import (
     BIAS_TIP,
     EXP_UI,
@@ -103,10 +102,7 @@ class JobBlock(QFrame):
     def __init__(self, programs: list, parent=None):
         super().__init__(parent)
         self._firmware = FIRMWARE_SHORT_EXPOSURE
-        self.setStyleSheet(
-            f"JobBlock {{ background: {SURFACE_LOW}; border: 1px solid {OUTLINE};"
-            f" border-radius: 2px; }}"
-        )
+        # Background and border come from the 'JobBlock' rule in style.make_qss.
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 5, 8, 5)
@@ -115,9 +111,7 @@ class JobBlock(QFrame):
         self._num_label = QLabel("#")
         self._num_label.setFixedWidth(24)
         self._num_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._num_label.setStyleSheet(
-            "color: #849495; font-family: 'JetBrains Mono', 'Consolas', monospace;"
-        )
+        self._num_label.setObjectName("mutedMono")
         lay.addWidget(self._num_label)
 
         self.program_combo = QComboBox()
@@ -149,9 +143,7 @@ class JobBlock(QFrame):
         # long_exposure that changes how long the job takes.
         self.frame_label = QLabel()
         self.frame_label.setFixedWidth(150)
-        self.frame_label.setStyleSheet(
-            f"color: {TEXT_DIM}; font-family: 'JetBrains Mono', Consolas, monospace;"
-        )
+        self.frame_label.setObjectName("monoLabel")
         lay.addWidget(self.frame_label)
 
         lay.addWidget(QLabel("#Files:"))
@@ -369,7 +361,6 @@ class ChainAcquisitionTab(QWidget):
         rig_row.addStretch()
 
         self.fpga_label = QLabel()
-        self.fpga_label.setStyleSheet(f"color: {TEXT_DIM};")
         rig_row.addWidget(self.fpga_label)
         root.addLayout(rig_row)
 
@@ -460,7 +451,7 @@ class ChainAcquisitionTab(QWidget):
     def _init_default_job(self):
         self.folder_edit.setText(os.path.join(functions_dir(), "data"))
         block = self.add_job()
-        block.select_program_by_tag("S3C")
+        block.select_program_by_tag("ORT")
         self._refresh_fpga_label()
         # Connected only after the default selection settles, so app
         # startup doesn't auto-trigger a Power Mgt run before the user
