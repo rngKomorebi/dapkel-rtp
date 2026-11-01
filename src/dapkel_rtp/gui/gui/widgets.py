@@ -3,7 +3,7 @@
 Two so far:
 
 * the frame-count picker — how many frames a run may ask for is not a free
-  choice, so every tab offers the same short list of legal values instead of a
+  choice, so every tab offers the same list of legal values instead of a
   spin box that can land anywhere;
 * 'TimedProgressBar' — the progress bar every long-running tab uses, which says
   how long the run has taken and how much is left, in text that stays readable
@@ -18,7 +18,7 @@ from PyQt5.QtCore import QRect, Qt, QTimer
 from PyQt5.QtGui import QColor, QPainter
 from PyQt5.QtWidgets import QComboBox, QProgressBar
 
-from .style import BG_DEEP, TEXT
+from .theme import current_theme
 
 # The readout hands data over in 16 MiB blocks of 8192 frames
 # (functions.hitmap.REPLAY_BLOCK_FRAMES). A run that is not a whole number of
@@ -27,15 +27,19 @@ from .style import BG_DEEP, TEXT
 # multiples of the block keeps every file exactly as long as it claims to be.
 FRAME_BLOCK = 8192
 
-# Four steps for now; extend the range when longer runs are wanted.
-FRAME_CHOICES = tuple(FRAME_BLOCK * n for n in range(1, 5))  # 8192 … 32 768
+# Every whole block up to 2 GiB, the size of the board's DDR3: a run has to
+# fit in it, which is where the "~1.1 million frames" limit quoted elsewhere
+# comes from (2 GiB / 2048 bytes per frame = 1 048 576).
+FRAME_MAX = 1_048_576
+FRAME_CHOICES = tuple(range(FRAME_BLOCK, FRAME_MAX + 1, FRAME_BLOCK))  # 128 steps
 
 DEFAULT_NFRAMES = 2 * FRAME_BLOCK  # 16 384
 
 FRAMES_TIP_BLOCK = (
     "Frames go in whole 8192-frame readout blocks (16 MiB each).\n"
     "A run that stops mid-block leaves the surplus slots replaying\n"
-    "earlier frames, so only multiples are offered."
+    "earlier frames, so only multiples are offered, up to the\n"
+    "board's 2 GiB of DDR3 (1 048 576 frames)."
 )
 
 
@@ -48,7 +52,7 @@ def make_nframes_combo(
     default: int = DEFAULT_NFRAMES,
     *,
     all_option: bool = False,
-    width: int = 90,
+    width: int = 100,
 ) -> QComboBox:
     """A combo of the legal frame counts; ``currentData()`` gives the int.
 
@@ -62,6 +66,8 @@ def make_nframes_combo(
         combo.addItem(_label(n), n)
     idx = combo.findData(default)
     combo.setCurrentIndex(idx if idx >= 0 else combo.findData(FRAME_CHOICES[0]))
+    # 128 entries: scroll a page of them rather than fill the screen.
+    combo.setMaxVisibleItems(16)
     combo.setFixedWidth(width)
     return combo
 
@@ -239,9 +245,15 @@ class TimedProgressBar(QProgressBar):
             boundary, whole.top(), whole.right() - boundary + 1, whole.height()
         )
 
+        # Read at paint time, so a theme change is picked up on the next
+        # repaint rather than needing the bar rebuilt.
+        theme = current_theme()
         painter = QPainter(self)
         painter.setFont(self.font())
-        for colour, clip in ((BG_DEEP, filled), (TEXT, empty)):
+        for colour, clip in (
+            (theme.window_deep, filled),
+            (theme.text, empty),
+        ):
             if clip.width() <= 0:
                 continue
             painter.setPen(QColor(colour))

@@ -372,9 +372,7 @@ class AcquisitionTab(QWidget):
         fw_row.addWidget(self.firmware_combo)
 
         self.frame_label = QLabel()
-        self.frame_label.setStyleSheet(
-            "font-family: 'JetBrains Mono', Consolas, monospace;"
-        )
+        self.frame_label.setObjectName("monoLabel")
         self.frame_label.setToolTip(
             "One frame's length, derived from the firmware and the shutter\n"
             "time — and the run's total camera time at the current frame\n"
@@ -398,7 +396,7 @@ class AcquisitionTab(QWidget):
         fw_row.addStretch()
 
         self.fpga_label = QLabel()
-        self.fpga_label.setStyleSheet(f"color: {'#849495'};")
+        self.fpga_label.setObjectName("mutedLabel")
         fw_row.addWidget(self.fpga_label)
 
         root.addLayout(fw_row)
@@ -452,7 +450,7 @@ class AcquisitionTab(QWidget):
             ):
                 self.program_combo.addItem(os.path.basename(fp), userData=fp)
             for i in range(self.program_combo.count()):
-                if "S3C" in self.program_combo.itemText(i):
+                if "ORT" in self.program_combo.itemText(i):
                     self.program_combo.setCurrentIndex(i)
                     break
         self.folder_edit.setText(os.path.join(functions_dir(), "data"))

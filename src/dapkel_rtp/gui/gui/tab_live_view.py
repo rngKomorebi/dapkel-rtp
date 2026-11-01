@@ -84,7 +84,8 @@ from ._paths import (
     resolve_pwr_mgt_cwd,
 )
 from .fpga_state import FPGA
-from .style import BG, OUTLINE, TEXT_DIM
+from .style import restyle_figure
+from .theme import current_theme, theme_manager
 from .tab_acquisition import EXP_UI, FIRMWARE_TIP, FRAME_READOUT_US, SettingsDialog
 from .worker import LiveViewWorker, PowerMgtWorker
 
@@ -155,6 +156,7 @@ class LiveViewTab(QWidget):
         # construction, before the user has done anything.
         self._on_mode_change(self.mode_combo.currentIndex())
         self._startup_complete = True
+        theme_manager().changed.connect(self._apply_theme)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -237,10 +239,7 @@ class LiveViewTab(QWidget):
         params.addWidget(self.exp_spin)
 
         self.frame_label = QLabel()
-        self.frame_label.setStyleSheet(
-            f"color: {TEXT_DIM}; "
-            "font-family: 'JetBrains Mono', Consolas, monospace;"
-        )
+        self.frame_label.setObjectName("monoLabel")
         self.frame_label.setToolTip(
             "One frame's length, from the firmware and the shutter time.\n"
             "The previewed rate does not divide by this but by the live\n"
@@ -299,9 +298,10 @@ class LiveViewTab(QWidget):
         root.addWidget(self.status_label)
 
         # ---- Matplotlib toolbar + canvas ----
-        self.figure = Figure(tight_layout=True, facecolor=BG)
+        theme = current_theme()
+        self.figure = Figure(tight_layout=True, facecolor=theme.figure_bg)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.canvas.setStyleSheet(f"background: {BG}; border: none;")
+        self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         root.addWidget(self.toolbar)
         root.addWidget(self.canvas, stretch=1)
@@ -567,6 +567,20 @@ class LiveViewTab(QWidget):
             self._on_program_change(self.program_combo.currentIndex())
         self.status_label.setText(f"Stopped after {self._frame_count} frame(s).")
 
+    def _apply_theme(self):
+        """Recolour the hitmap on screen for a theme just chosen.
+
+        Recoloured in place rather than redrawn: the tab keeps no copy of the
+        last frame, and while a run is going the next one replaces it within a
+        second anyway. Forgetting the canvas size makes that next frame take
+        the full rebuild, so a new plot font size gets its layout pass too.
+        """
+        theme = current_theme()
+        self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
+        restyle_figure(self.figure, theme)
+        self._plot_canvas_size = None
+        self.canvas.draw_idle()
+
     def _rebuild_plot(
         self,
         data: np.ndarray,
@@ -584,27 +598,28 @@ class LiveViewTab(QWidget):
         self.figure.clear()
         self.figure.set_tight_layout(True)
         ax = self.figure.add_subplot(111)
+        theme = current_theme()
         im = ax.imshow(
             data,
-            cmap="gray",
+            cmap=theme.colormap,
             aspect="equal",
             origin="lower",
             vmin=clim[0],
             vmax=clim[1],
         )
         cb = self.figure.colorbar(im, ax=ax, label=clabel)
-        cb.ax.tick_params(colors=TEXT_DIM)
-        cb.ax.yaxis.label.set_color(TEXT_DIM)
-        cb.outline.set_edgecolor(OUTLINE)
-        ax.set_title(title, color=TEXT_DIM)
-        ax.set_xlabel("Column", color=TEXT_DIM)
-        ax.set_ylabel("Row", color=TEXT_DIM)
-        ax.tick_params(colors=TEXT_DIM)
+        cb.ax.tick_params(colors=theme.axes_fg)
+        cb.ax.yaxis.label.set_color(theme.axes_fg)
+        cb.outline.set_edgecolor(theme.axes_edge)
+        ax.set_title(title, color=theme.axes_fg)
+        ax.set_xlabel("Column", color=theme.axes_fg)
+        ax.set_ylabel("Row", color=theme.axes_fg)
+        ax.tick_params(colors=theme.axes_fg)
         # The dark theme turns the grid on globally; over a hitmap it just
         # draws lines across the pixels, so keep the image clean.
         ax.grid(False)
         for spine in ax.spines.values():
-            spine.set_edgecolor(OUTLINE)
+            spine.set_edgecolor(theme.axes_edge)
 
         # First pass lets tight_layout run and aspect="equal" shrink ax to a
         # square; only after that does ax.get_position() reflect the real
@@ -720,7 +735,7 @@ class LiveViewTab(QWidget):
         else:
             self._plot_im.set_data(data)
             self._plot_im.set_clim(*clim)
-            self._plot_ax.set_title(title, color=TEXT_DIM)
+            self._plot_ax.set_title(title, color=current_theme().axes_fg)
         self.canvas.draw_idle()
 
         if not np.any(np.asarray(frames) > 0):

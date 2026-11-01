@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-01
+
+### Added
+
+- Themes and a Preferences window, ported from daplis-rtp. *View → Theme* picks
+  one of eleven presets: **Deep Space**, the look the application shipped with
+  and still the default, plus the ten daplis-rtp presets (dark: Cyberpunk,
+  Midnight, Night wave, Blueprint, High contrast; light: Daylight, Komorebi,
+  Earth, Solarized, Publication). *View → Preferences…* (Ctrl+,) changes the
+  accent, the plot colours, the histogram colour, the hitmap colormap, the grid
+  and both font sizes. The interface font defaults to *Auto*, which is the old
+  window-height scaling. Every change applies at once, to the window and to the
+  plots already drawn, and is stored per user through `QSettings`
+  (`HKCU\Software\DAPKEL\dapkel-rtp`).
+- Preferences also offers the window's own colours, not just the accent:
+  window background, panels, input fields, buttons, borders, text, secondary
+  and muted text, and the OK / Warning / Error status colours, in two columns
+  beside the plot colours. Hover and button-fill shades are worked out again
+  from whichever colour they belong to, so they keep matching.
+- `gui/theme.py` holds the presets and the user's overrides; `gui/style.py`
+  builds the stylesheet and the matplotlib settings from them, so nothing else
+  in the GUI hard-codes a colour any more. Deep Space produces exactly the
+  stylesheet and rcParams of 0.3.0.
+- A *Help* menu beside *View*. *Help → User guide* (F1) opens a searchable
+  guide, in its own window and in the current theme, at the section for the
+  tab in front. It covers getting started, the key concepts (programs,
+  firmware, Power Mgt and the shared FPGA state, frame blocks, chip bits, the
+  files written), every control on every tab, the Data Quality verdict rules,
+  themes, troubleshooting and shortcuts. *Help → About* gives the version.
+  The text lives in `gui/help_content.py`, apart from the window code in
+  `gui/help.py`, so it can be kept in step with the tabs.
+- Every window's Windows title bar is dark, whatever the theme and whatever
+  the system's light/dark setting (`gui/title_bar.py`).
+
+### Changed
+
+- The frame-count picker offers every whole 8192-frame block up to 1 048 576
+  frames (2 GiB, the board's DDR3), not just the first four.
+- Single and Chain Acquisition start on the ORT program instead of S3C.
+- `style.apply_mpl_dark` is now `apply_mpl_theme`.
+
 ## [0.3.0] - 2026-09-15
 
 ### Added
