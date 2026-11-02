@@ -27,32 +27,43 @@ from .theme import current_theme
 # multiples of the block keeps every file exactly as long as it claims to be.
 FRAME_BLOCK = 8192
 
-# Every whole block up to 2 GiB, the size of the board's DDR3: a run has to
-# fit in it, which is where the "~1.1 million frames" limit quoted elsewhere
-# comes from (2 GiB / 2048 bytes per frame = 1 048 576).
-FRAME_MAX = 1_048_576
-FRAME_CHOICES = tuple(range(FRAME_BLOCK, FRAME_MAX + 1, FRAME_BLOCK))  # 128 steps
+# At most 1 024 000 frames (125 blocks). The board's DDR3 is 2 GiB, which would
+# hold 1 048 576 (2 GiB / 2048 bytes per frame), but runs above 1 024 000 do
+# not work on the hardware.
+FRAME_MAX = 1_024_000
+
+# Doubling from one block to 64 (1 GiB), then the maximum: eight choices that
+# each differ clearly in file size and run time, rather than all 125 blocks.
+FRAME_CHOICES = tuple(FRAME_BLOCK * 2**k for k in range(7)) + (FRAME_MAX,)
 
 DEFAULT_NFRAMES = 2 * FRAME_BLOCK  # 16 384
 
 FRAMES_TIP_BLOCK = (
-    "Frames go in whole 8192-frame readout blocks (16 MiB each).\n"
+    "Frames go in whole 8192-frame readout blocks (about 17 MB each).\n"
     "A run that stops mid-block leaves the surplus slots replaying\n"
-    "earlier frames, so only multiples are offered, up to the\n"
-    "board's 2 GiB of DDR3 (1 048 576 frames)."
+    "earlier frames, so only whole blocks are offered: doubling\n"
+    "from 8192 to 524 288, then 1 024 000, the most a run can take."
 )
 
 
+BYTES_PER_FRAME = 2048  # 32 x 32 pixels
+
+
 def _label(n: int) -> str:
-    """Group thousands with a space: 16384 → '16 384'."""
-    return f"{n:,}".replace(",", " ")
+    """Frame count with its file size: 16384 → '16 384 (34 MB)'.
+
+    Thousands are grouped with a space. The size is decimal megabytes
+    (10^6 bytes), rounded to whole MB; Windows Explorer counts 2^20 bytes to
+    its "MB", so it shows the same file about 5-7 % smaller.
+    """
+    mb = n * BYTES_PER_FRAME / 1e6
+    return f"{n:,}".replace(",", " ") + f" ({mb:.0f} MB)"
 
 
 def make_nframes_combo(
     default: int = DEFAULT_NFRAMES,
     *,
     all_option: bool = False,
-    width: int = 100,
 ) -> QComboBox:
     """A combo of the legal frame counts; ``currentData()`` gives the int.
 
@@ -66,9 +77,9 @@ def make_nframes_combo(
         combo.addItem(_label(n), n)
     idx = combo.findData(default)
     combo.setCurrentIndex(idx if idx >= 0 else combo.findData(FRAME_CHOICES[0]))
-    # 128 entries: scroll a page of them rather than fill the screen.
-    combo.setMaxVisibleItems(16)
-    combo.setFixedWidth(width)
+    # Wide enough for the longest label ('1 024 000 (2097 MB)') at whatever
+    # font size the user picks; a fixed width cut it off.
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
     return combo
 
 

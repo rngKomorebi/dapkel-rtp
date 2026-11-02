@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-02
+
+### Changed
+
+- The frame-count picker offers eight choices instead of every block:
+  8192, doubling up to 524 288 (1 to 64 blocks), then 1 024 000.
+- Each option in the frame-count picker shows the file size it means in
+  brackets, in whole decimal MB, e.g. "65 536 (134 MB)". The box sizes itself to the longest
+  label instead of a fixed 100 px, which cut "1 024 000" off.
+
+### Fixed
+
+- Frame counts stop at 1 024 000 (125 blocks of 8192), the most a run can
+  take: the picker on Single and Chain Acquisition no longer offers 1 032 192
+  to 1 048 576, and Live View's Frames/acq no longer goes up to 1 100 000.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
