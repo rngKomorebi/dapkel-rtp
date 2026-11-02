@@ -87,6 +87,7 @@ from .fpga_state import FPGA
 from .style import restyle_figure
 from .theme import current_theme, theme_manager
 from .tab_acquisition import EXP_UI, FIRMWARE_TIP, FRAME_READOUT_US, SettingsDialog
+from .widgets import FRAME_MAX
 from .worker import LiveViewWorker, PowerMgtWorker
 
 # Tooltip for Frames/acq, kept in one place: it is re-set on every mode change.
@@ -218,7 +219,7 @@ class LiveViewTab(QWidget):
 
         params.addWidget(QLabel("Frames/acq:"))
         self.nframes_spin = QSpinBox()
-        self.nframes_spin.setRange(1, 1_100_000)
+        self.nframes_spin.setRange(1, FRAME_MAX)
         # Not the acquisition tabs' 16 384, and not stepped to their 8192
         # block: this is a preview that reacquires every pass, so the frame
         # count is a refresh-rate choice, not a file-layout one.

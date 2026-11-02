@@ -114,9 +114,11 @@ does not notice: press its Power Mgt after using another tab.</p>
 run that is not a whole number of blocks still fills its last block, and the
 surplus slots are a byte-exact <b>replay</b> of the slots 8192 earlier. They
 are copies, not extra data.</li>
-<li>That is why the acquisition tabs only offer multiples of 8192, from 8192
-up to <b>1&nbsp;048&nbsp;576 frames (2 GiB)</b>, the size of the board's DDR3
-memory, which one acquisition has to fit in. The default is 16&nbsp;384 (two
+<li>That is why the acquisition tabs only offer whole blocks: 8192, 16&nbsp;384,
+32&nbsp;768, 65&nbsp;536, 131&nbsp;072, 262&nbsp;144 and 524&nbsp;288 (each
+double the last, 1 to 64 blocks), then <b>1&nbsp;024&nbsp;000 frames</b>
+(125 blocks), the most one acquisition can take. The board's DDR3 memory is 2 GiB, which would hold 1&nbsp;048&nbsp;576
+frames, but runs above 1&nbsp;024&nbsp;000 do not work. The default is 16&nbsp;384 (two
 blocks).</li>
 <li>Never infer a frame count from a file size. The Data Quality tab lists
 <i>slots</i>, which is a size.</li>
@@ -173,8 +175,12 @@ writing one <code>.bin</code> per run into the output folder.</p>
 (<code>program_ORT.txt</code>, &hellip;). Defaults to <b>ORT</b>. Changing it
 runs Power Mgt, which loads the new program onto the FPGA.</td></tr>
 <tr><td>Frames</td><td>Frames per file. Only whole 8192-frame readout blocks
-are offered, from 8192 up to 1&nbsp;048&nbsp;576 (2 GiB, the board's DDR3
-memory). Defaults to 16&nbsp;384.</td></tr>
+are offered: 8192, doubling up to 524&nbsp;288, then 1&nbsp;024&nbsp;000, the
+most one acquisition can take. Each option shows in brackets the size of the
+file it writes, in whole MB (1&nbsp;MB = 1&nbsp;000&nbsp;000 bytes): 17, 34, 67,
+134, 268, 537, 1074 and 2097&nbsp;MB. Windows Explorer shows the same files about
+5&ndash;7&nbsp;% smaller, because its &ldquo;MB&rdquo; is 1&nbsp;048&nbsp;576
+bytes. Defaults to 16&nbsp;384 (34&nbsp;MB).</td></tr>
 <tr><td>#Acq</td><td>How many files to write, 1 to 100&nbsp;000. Defaults to
 10.</td></tr>
 <tr><td>Shutter / Shutter X</td><td>Shutter time in &micro;s; 0.2 means
@@ -280,8 +286,12 @@ Timestamps, First photon / OR and Coincidences. Job #1 defaults to <b>ORT</b>. C
 #1's program runs Power Mgt; later jobs are loaded when the chain reaches
 them.</td></tr>
 <tr><td>Frames</td><td>Frames per file. Only whole 8192-frame readout blocks
-are offered, from 8192 up to 1&nbsp;048&nbsp;576 (2 GiB, the board's DDR3
-memory). Defaults to 16&nbsp;384.</td></tr>
+are offered: 8192, doubling up to 524&nbsp;288, then 1&nbsp;024&nbsp;000, the
+most one acquisition can take. Each option shows in brackets the size of the
+file it writes, in whole MB (1&nbsp;MB = 1&nbsp;000&nbsp;000 bytes): 17, 34, 67,
+134, 268, 537, 1074 and 2097&nbsp;MB. Windows Explorer shows the same files about
+5&ndash;7&nbsp;% smaller, because its &ldquo;MB&rdquo; is 1&nbsp;048&nbsp;576
+bytes. Defaults to 16&nbsp;384 (34&nbsp;MB).</td></tr>
 <tr><td>Shutter / Shutter X</td><td>This job's shutter time in &micro;s; 0.2
 means 200&nbsp;ns. Under <code>short_exposure</code> the box reads
 <i>Shutter</i>: it is how long the shutter is open inside the fixed
@@ -359,7 +369,7 @@ On this tab, changing the firmware does <b>not</b> run Power Mgt by itself:
 press Power Mgt afterwards. If the shutter is above the new firmware's limit,
 it is lowered to fit and the status line says so.</td></tr>
 <tr><td>Frames/acq</td><td>Frames per acquisition (per quadrant in
-64&times;64), from 1 to 1&nbsp;100&nbsp;000 in any step; the arrows step by
+64&times;64), from 1 to 1&nbsp;024&nbsp;000 in any step; the arrows step by
 100. Defaults to 1000. More frames give a smoother, more precise map but a
 slower refresh. The rate does not change.</td></tr>
 <tr><td>Shutter / Shutter X</td><td>Shutter time in &micro;s, default 0.2
@@ -439,8 +449,10 @@ acquired is on top. Untick to sort by name.</td></tr>
 <tr><td>Pixels</td><td><b>All pixels (pooled)</b> is the quickest way to see
 whether the run recorded timing at all. <b>Single pixel</b> uses
 <b>Row</b>/<b>Col</b> (0&ndash;31).</td></tr>
-<tr><td>Frames</td><td>Frames to examine from the start of the file, in whole
-8192-frame blocks, default 16&nbsp;384. One block (8192) is plenty. <b>all</b> stops where the replayed tail starts, so no frame
+<tr><td>Frames</td><td>Frames to examine from the start of the file: 8192,
+doubling up to 524&nbsp;288, then 1&nbsp;024&nbsp;000, or <b>all</b>. Default
+16&nbsp;384. The size in brackets is how much of
+the file that reads, in whole MB (1&nbsp;MB = 1&nbsp;000&nbsp;000 bytes). One block (8192) is plenty. <b>all</b> stops where the replayed tail starts, so no frame
 is counted twice. If you know the frame count the run was taken with, set it
 here.</td></tr>
 <tr><td>Bins</td><td>Histogram columns drawn, 8 to 4096, default 256. Only the
