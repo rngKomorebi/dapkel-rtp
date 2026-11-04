@@ -107,6 +107,35 @@ folder they share with the app's default output path.
 
 ## Installation and usage
 
+### System requirements
+
+Acquisition needs a **64-bit Windows 10 or 11** PC. Every acquisition runs
+`Kelpie_v2.exe` / `Kelpie_v2_pwr_mgt.exe`, which are Windows programs. The app
+opens on Linux and macOS too, and the Data Quality tab works there on copied
+`.bin` files, but nothing can be acquired. The released `DAPKEL-RTP.exe`
+bundles Python and every Python package. Two things it cannot bundle must be
+installed on the PC once:
+
+1. **Microsoft Visual C++ 2015–2022 Redistributable (x64)**:
+   [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+   Both helper exes and `okFrontPanel.dll` need `MSVCP140.dll`,
+   `VCRUNTIME140.dll` and `VCRUNTIME140_1.dll`. Many PCs already have it,
+   because other software installs it. Without it the helper exes cannot
+   start, and the app says so and names the missing DLLs.
+2. **Opal Kelly FrontPanel USB driver**, from Opal Kelly's
+   [Pins](https://pins.opalkelly.com) download site (FrontPanel SDK or
+   driver-only installer). It lets `okFrontPanel.dll` find the camera's FPGA
+   board over USB. Without it the helper exes start but find no device.
+
+Keep the **Output Folder** (and the folder holding the app) on a path with
+plain ASCII characters, or at least only characters in the PC's ANSI code
+page. The helper exes receive their arguments in that code page, so a folder
+named in, for example, Cyrillic would reach them as `???`. The app checks the
+folder and refuses to start such an acquisition, telling you which path is
+the problem.
+
+### Installing from source
+
 A fresh, separate virtual environment is highly recommended before installing the package.
 This can be done using pip, see, e.g., [this](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/).
 This can help to avoid any dependency conflicts and ensure smooth operation of the
@@ -174,6 +203,19 @@ branch for new introductions, submitting the results via pull requests.
 Everyone willing to contribute is kindly asked to follow the 
 [PEP 8](https://peps.python.org/pep-0008/) and 
 [PEP 257](https://peps.python.org/pep-0257/) conventions.
+
+### Running the tests
+
+The tests need no camera: they build small synthetic '.bin' files and check
+the decoding, the hitmap, the data-quality verdicts and the metadata against
+what was written, and build the whole GUI window without showing it. Install
+the package with its test extras and run pytest from the repo root:
+```
+pip install -e ".[dev]"
+pytest
+```
+GitHub Actions runs the same suite on every push and pull request, on Windows
+and Ubuntu, for every Python version from 3.10 to 3.15.
 
 ## License and contact info
 

@@ -49,15 +49,19 @@ from matplotlib.backends.backend_qt5agg import (
     NavigationToolbar2QT,
 )
 from matplotlib.figure import Figure
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -80,10 +84,19 @@ from ._paths import (
     FIRMWARE_SHORT_EXPOSURE,
     firmware_bitfile,
     functions_dir,
+    masks_dir,
     programs_dir,
     resolve_pwr_mgt_cwd,
 )
 from .fpga_state import FPGA
+from .pixel_mask import (
+    PixelMaskWindow,
+    SaveMaskDialog,
+    mask_key,
+    read_mask_file,
+    saved_pixels,
+    write_mask_file,
+)
 from .style import restyle_figure
 from .theme import current_theme, theme_manager
 from .tab_acquisition import EXP_UI, FIRMWARE_TIP, FRAME_READOUT_US, SettingsDialog
@@ -114,6 +127,11 @@ _NFRAMES_TIP_64 = (
     "Lower this for a faster refresh.\n" + _NFRAMES_TIP_STATS
 )
 
+# Mouse zoom on the map: each wheel notch shows this fraction of the view's
+# width, and the view never narrows below a few pixels across.
+_ZOOM_STEP = 0.8
+_MIN_VIEW_PIXELS = 4
+
 
 class LiveViewTab(QWidget):
     def __init__(self):
@@ -142,6 +160,15 @@ class LiveViewTab(QWidget):
         self._plot_shape = None
         self._plot_canvas_size = None
         self._plot_clabel = None  # colourbar units currently drawn
+        self._plot_marks = None  # the crosses over masked pixels
+        # The last hitmap drawn, so a change of mask redraws it at once
+        # instead of waiting for the next pass (or for ever, once stopped).
+        self._last_payload: dict | None = None
+        # Mouse-drag pan in progress: start position and the view it began on.
+        self._pan = None
+        # Boards the mask was last saved for or loaded from, offered again
+        # the next time it is saved.
+        self._mask_boards = ("", "")
         # (program, firmware) pair this tab last programmed; shared with the
         # other tabs via fpga_state so nobody acts on a stale belief.
         self._pwr_mgt_state: tuple[str, str] | None = None
@@ -304,7 +331,53 @@ class LiveViewTab(QWidget):
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
-        root.addWidget(self.toolbar)
+        self.canvas.setToolTip(
+            "Ctrl+click a pixel to mask or unmask it.\n"
+            "Scroll to zoom, drag to pan, double-click for the full map."
+        )
+        self.canvas.mpl_connect("button_press_event", self._on_press)
+        self.canvas.mpl_connect("button_release_event", self._on_release)
+        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.canvas.mpl_connect("scroll_event", self._on_scroll)
+
+        # ---- Pixel mask, beside the toolbar ----
+        self.mask_window = PixelMaskWindow(self)
+        self.mask_window.changed.connect(self._on_mask_changed)
+        plot_bar = QHBoxLayout()
+        plot_bar.addWidget(self.toolbar)
+        plot_bar.addStretch()
+        self.mask_label = QLabel(self.mask_window.summary())
+        self.mask_label.setToolTip(
+            "Masked pixels are drawn blank with a cross and left out of the\n"
+            "colour scale, the mean/median/max and the peak occupancy.\n"
+            "Ctrl+click a pixel on the map to mask or unmask it."
+        )
+        edit_mask_btn = QPushButton("Edit mask…")
+        edit_mask_btn.setToolTip(
+            "Open the pixel mask in a window of its own; it can stay open\n"
+            "beside the map while the preview runs."
+        )
+        edit_mask_btn.clicked.connect(self.mask_window.open_beside)
+        reset_mask_btn = QPushButton("Reset mask")
+        reset_mask_btn.setToolTip("Unmask every pixel of the map in view.")
+        reset_mask_btn.clicked.connect(self.mask_window.clear)
+        save_mask_btn = QPushButton("Save mask…")
+        save_mask_btn.setToolTip(
+            "Save the mask of the map in view for one daughterboard and\n"
+            f"motherboard, as e.g. D0_M0.json in\n{masks_dir()}"
+        )
+        save_mask_btn.clicked.connect(self._save_mask)
+        load_mask_btn = QPushButton("Load mask…")
+        load_mask_btn.setToolTip(
+            "Replace the mask of the map in view with one saved earlier."
+        )
+        load_mask_btn.clicked.connect(self._load_mask)
+        plot_bar.addWidget(self.mask_label)
+        plot_bar.addWidget(edit_mask_btn)
+        plot_bar.addWidget(reset_mask_btn)
+        plot_bar.addWidget(save_mask_btn)
+        plot_bar.addWidget(load_mask_btn)
+        root.addLayout(plot_bar)
         root.addWidget(self.canvas, stretch=1)
 
     def _populate_programs(self):
@@ -334,6 +407,9 @@ class LiveViewTab(QWidget):
 
     def _on_mode_change(self, idx: int):
         is_64 = idx == 1
+        # Each mode keeps its own mask: (5, 12) is a different SPAD in each.
+        self.mask_window.set_shape(*((64, 64) if is_64 else (32, 32)))
+        self.mask_label.setText(self.mask_window.summary())
         self.program_combo.setEnabled(not is_64)
         self.pwr_btn.setEnabled(not is_64)
         if is_64:
@@ -530,7 +606,9 @@ class LiveViewTab(QWidget):
             }
 
         self._frame_count = 0
-        self._plot_shape = None  # force a clean rebuild for this run
+        # Force a clean rebuild for this run. The shape is kept, so a run on
+        # the same map keeps the zoom the last one was left at.
+        self._plot_im = None
         self.mode_combo.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -571,14 +649,16 @@ class LiveViewTab(QWidget):
     def _apply_theme(self):
         """Recolour the hitmap on screen for a theme just chosen.
 
-        Recoloured in place rather than redrawn: the tab keeps no copy of the
-        last frame, and while a run is going the next one replaces it within a
-        second anyway. Forgetting the canvas size makes that next frame take
-        the full rebuild, so a new plot font size gets its layout pass too.
+        Recoloured in place rather than redrawn: while a run is going the next
+        frame replaces it within a second anyway. Forgetting the canvas size
+        makes that next frame take the full rebuild, so a new plot font size
+        gets its layout pass too.
         """
         theme = current_theme()
         self.canvas.setStyleSheet(f"background: {theme.figure_bg}; border: none;")
         restyle_figure(self.figure, theme)
+        if self._plot_marks is not None:
+            self._plot_marks.set_color(theme.axes_fg)
         self._plot_canvas_size = None
         self.canvas.draw_idle()
 
@@ -596,6 +676,12 @@ class LiveViewTab(QWidget):
         shape, canvas size or colourbar units actually changed, not on every
         frame. The title is set *here*, before the layout pass, because it is
         two lines tall and tight_layout has to reserve room for it."""
+        # Same map, same zoom: a rebuild for a resized window or a new
+        # colourbar unit must not throw away where the map was zoomed to.
+        keep = None
+        if self._plot_ax is not None and self._plot_shape == (rows, cols):
+            keep = (self._plot_ax.get_xlim(), self._plot_ax.get_ylim())
+        self._pan = None
         self.figure.clear()
         self.figure.set_tight_layout(True)
         ax = self.figure.add_subplot(111)
@@ -607,6 +693,17 @@ class LiveViewTab(QWidget):
             origin="lower",
             vmin=clim[0],
             vmax=clim[1],
+        )
+        # A cross on each masked pixel, which imshow leaves blank. Not
+        # scaling the axes to it keeps the image's own limits.
+        (marks,) = ax.plot(
+            [],
+            [],
+            linestyle="none",
+            marker="x",
+            color=theme.axes_fg,
+            scalex=False,
+            scaley=False,
         )
         cb = self.figure.colorbar(im, ax=ax, label=clabel)
         cb.ax.tick_params(colors=theme.axes_fg)
@@ -643,15 +740,32 @@ class LiveViewTab(QWidget):
             )
         self.figure.set_tight_layout(False)
 
+        # Home on the toolbar returns to this full view. Recorded only now,
+        # after the centering, because Home restores the axes' positions
+        # along with their limits.
+        self.toolbar.update()
+        self.toolbar.push_current()
+        if keep is not None:
+            ax.set_xlim(keep[0])
+            ax.set_ylim(keep[1])
+
         self._plot_ax = ax
         self._plot_im = im
         self._plot_cb = cb
+        self._plot_marks = marks
         self._plot_shape = (rows, cols)
         self._plot_canvas_size = (self.canvas.width(), self.canvas.height())
         self._plot_clabel = clabel
 
     def _on_frame(self, payload: dict):
-        """Render one accumulated hitmap emitted by the worker.
+        """Count and keep one accumulated hitmap emitted by the worker, then
+        draw it."""
+        self._frame_count += 1
+        self._last_payload = payload
+        self._render(payload)
+
+    def _render(self, payload: dict):
+        """Draw one accumulated hitmap, with the current mask applied.
 
         ``payload`` carries the reduced map plus what is needed to normalise
         it: the reduction mode, the number of frames that carried data, and
@@ -659,8 +773,6 @@ class LiveViewTab(QWidget):
         whenever that live time is known — the same quantity the offline
         'hitmap_analysis' rate map plots.
         """
-        self._frame_count += 1
-
         hitmap = payload["hitmap"]
         frames = payload["frames"]  # a number, or per-pixel in 64x64 mode
         frames_req = payload["frames_requested"]
@@ -679,21 +791,36 @@ class LiveViewTab(QWidget):
             clabel = f"photon rate [{payload['unit']}]"
             unit = f" {payload['unit']}"
 
-        # Full measured range: every pixel is drawn as counted, hot ones
-        # included. Nothing is clipped and the scale is not carried over
-        # between refreshes.
-        clim = color_limits(data)
+        # Masked pixels are left out of everything read off the map -- the
+        # colour scale, the stats, the peak occupancy -- and drawn blank with
+        # a cross, so a hot pixel stops setting the scale once it is masked.
+        self.mask_window.set_shape(rows, cols)
+        masked = self.mask_window.mask_for(rows, cols)
+        n_masked = int(masked.sum())
+        shown = data[~masked]
+        if not shown.size:
+            shown = np.zeros(1)  # every pixel masked: nothing left to scale to
+
+        # Full measured range of the unmasked pixels: each is drawn as
+        # counted, hot ones included. Nothing is clipped and the scale is not
+        # carried over between refreshes.
+        clim = color_limits(shown)
         canvas_size = (self.canvas.width(), self.canvas.height())
 
-        mean = float(np.mean(data))
-        median = float(np.median(data))
-        peak = float(data.max())
+        mean = float(np.mean(shown))
+        median = float(np.median(shown))
+        peak = float(shown.max())
         step = self._rate_step(rate, frames, payload["live_per_frame"])
         frames_txt = self._frames_text(frames, frames_req)
         # Only in timestamp mode is the hitmap an occupancy with a ceiling of
         # one; count mode sums real counts, so the ratio would be a fraction
-        # of nothing. See 'peak_occupancy'.
-        occ = None if mode == MODE_COUNT else peak_occupancy(hitmap, frames)
+        # of nothing. See 'peak_occupancy'. A masked pixel counts as never
+        # having fired, so it cannot be named the busiest.
+        occ = (
+            None
+            if mode == MODE_COUNT
+            else peak_occupancy(np.where(masked, 0.0, hitmap), frames)
+        )
         # On the first line, not with the stats: the second line already runs
         # close to the colourbar's exponent label. Stated as a bare number,
         # with no word judging it -- where the response stops being linear
@@ -731,12 +858,15 @@ class LiveViewTab(QWidget):
             or self._plot_canvas_size != canvas_size
             or self._plot_clabel != clabel
         )
+        display = np.ma.masked_array(data, mask=masked)
         if needs_rebuild:
-            self._rebuild_plot(data, rows, cols, clabel, clim, title)
+            self._rebuild_plot(display, rows, cols, clabel, clim, title)
         else:
-            self._plot_im.set_data(data)
+            self._plot_im.set_data(display)
             self._plot_im.set_clim(*clim)
             self._plot_ax.set_title(title, color=current_theme().axes_fg)
+        mark_rows, mark_cols = np.nonzero(masked)
+        self._plot_marks.set_data(mark_cols, mark_rows)
         self.canvas.draw_idle()
 
         if not np.any(np.asarray(frames) > 0):
@@ -766,9 +896,198 @@ class LiveViewTab(QWidget):
                 )
             else:
                 status += ", no pixel fired in any frame"
+        if n_masked:
+            status += f", {n_masked} masked pixel(s) left out"
         if read < frames_req:
             status += f"  [only {read} frames in the file]"
         self.status_label.setText(status)
+
+    # ------------------------------------------------------------------
+    # Pixel mask and mouse zoom
+    # ------------------------------------------------------------------
+
+    def _on_mask_changed(self):
+        """Update the count and redraw the last map with the new mask."""
+        self.mask_label.setText(self.mask_window.summary())
+        if self._last_payload is not None:
+            self._render(self._last_payload)
+
+    def _save_mask(self):
+        """Save the mask of the map in view under a daughterboard and
+        motherboard, keeping the other map's mask already in that file."""
+        pixels = self.mask_window.pixels()
+        rows, cols = self.mask_window.shape
+        if not pixels:
+            QMessageBox.information(
+                self, "Save mask", "No pixel is masked, so there is nothing to save."
+            )
+            return
+        dlg = SaveMaskDialog(
+            self, masks_dir(), len(pixels), (rows, cols), *self._mask_boards
+        )
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        db, mb = dlg.names()
+        path = dlg.path()
+
+        existing = None
+        if os.path.isfile(path):
+            try:
+                existing = read_mask_file(path)
+            except (OSError, ValueError) as err:
+                answer = QMessageBox.question(
+                    self,
+                    "Save mask",
+                    f"{path} exists but cannot be read as a mask ({err}).\n\n"
+                    "Overwrite it?",
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            else:
+                before = existing["masks"].get(mask_key(rows, cols))
+                if before is not None and sorted(map(tuple, before)) != pixels:
+                    answer = QMessageBox.question(
+                        self,
+                        "Save mask",
+                        f"{db}_{mb} already has a {rows}×{cols} mask of "
+                        f"{len(before)} pixel(s).\n\nReplace it with these "
+                        f"{len(pixels)}?",
+                    )
+                    if answer != QMessageBox.Yes:
+                        return
+        try:
+            write_mask_file(path, db, mb, (rows, cols), pixels, existing)
+        except OSError as err:
+            QMessageBox.warning(self, "Save mask", f"Could not save the mask:\n{err}")
+            return
+        self._mask_boards = (db, mb)
+        self.status_label.setText(
+            f"Saved {len(pixels)} masked pixel(s) ({rows}×{cols}) to {path}"
+        )
+
+    def _load_mask(self):
+        """Replace the mask of the map in view with a saved one."""
+        rows, cols = self.mask_window.shape
+        folder = masks_dir()
+        paths = sorted(glob.glob(os.path.join(folder, "*.json")))
+        if not paths:
+            QMessageBox.information(
+                self, "Load mask", f"No saved masks yet in\n{folder}"
+            )
+            return
+        names = [os.path.splitext(os.path.basename(p))[0] for p in paths]
+        name, ok = QInputDialog.getItem(
+            self,
+            "Load mask",
+            f"Mask for the {rows}×{cols} map, by daughterboard_motherboard:",
+            names,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        path = paths[names.index(name)]
+        try:
+            data = read_mask_file(path)
+            pixels = saved_pixels(data, rows, cols)
+        except (OSError, ValueError) as err:
+            QMessageBox.warning(self, "Load mask", f"Could not load {path}:\n{err}")
+            return
+        if pixels is None:
+            saved = ", ".join(data["masks"]) or "none"
+            QMessageBox.information(
+                self,
+                "Load mask",
+                f"{name} has no {rows}×{cols} mask (saved: {saved}).",
+            )
+            return
+        self.mask_window.replace(pixels)
+        self._mask_boards = (
+            data.get("daughterboard", ""),
+            data.get("motherboard", ""),
+        )
+        self.status_label.setText(
+            f"Loaded {len(pixels)} masked pixel(s) ({rows}×{cols}) from {path}"
+        )
+
+    def _full_view(self):
+        """The axes limits that show the whole map, as imshow sets them."""
+        rows, cols = self._plot_shape
+        return (-0.5, cols - 0.5), (-0.5, rows - 0.5)
+
+    @staticmethod
+    def _clamp(lo: float, hi: float, full: tuple[float, float]):
+        """Slide (lo, hi) back inside 'full', narrowing it only if wider."""
+        width = min(hi - lo, full[1] - full[0])
+        lo = min(max(lo, full[0]), full[1] - width)
+        return lo, lo + width
+
+    def _on_press(self, event):
+        """Ctrl+click masks a pixel, double-click shows the full map, and a
+        plain press starts a drag-pan."""
+        ax = self._plot_ax
+        if ax is None or event.inaxes is not ax or event.button != 1:
+            return
+        if self.toolbar.mode:
+            return  # the toolbar's own pan or zoom tool has the mouse
+        # Read from Qt, not event.key: matplotlib only learns of modifiers
+        # through key events, which reach the canvas once it has focus, so the
+        # first Ctrl+click after clicking elsewhere would look like a plain one.
+        if QApplication.keyboardModifiers() & Qt.ControlModifier:
+            rows, cols = self._plot_shape
+            row, col = int(round(event.ydata)), int(round(event.xdata))
+            if 0 <= row < rows and 0 <= col < cols:
+                self.mask_window.toggle(row, col)
+            return
+        if event.dblclick:
+            self._pan = None
+            full_x, full_y = self._full_view()
+            ax.set_xlim(full_x)
+            ax.set_ylim(full_y)
+            self.canvas.draw_idle()
+            return
+        self._pan = (event.x, event.y, ax.get_xlim(), ax.get_ylim())
+
+    def _on_motion(self, event):
+        """Drag-pan: move the view with the mouse, kept inside the map."""
+        if self._pan is None or self._plot_ax is None:
+            return
+        x0, y0, xlim, ylim = self._pan
+        ax = self._plot_ax
+        # Pixels to data units. Panning only shifts the transform, never
+        # scales it, so the difference of two points is the same throughout.
+        start, now = ax.transData.inverted().transform(
+            [(x0, y0), (event.x, event.y)]
+        )
+        dx, dy = now - start
+        full_x, full_y = self._full_view()
+        ax.set_xlim(self._clamp(xlim[0] - dx, xlim[1] - dx, full_x))
+        ax.set_ylim(self._clamp(ylim[0] - dy, ylim[1] - dy, full_y))
+        self.canvas.draw_idle()
+
+    def _on_release(self, _event):
+        self._pan = None
+
+    def _on_scroll(self, event):
+        """Wheel zoom about the pixel under the mouse."""
+        ax = self._plot_ax
+        if ax is None or event.inaxes is not ax:
+            return
+        scale = _ZOOM_STEP**event.step  # wheel up (step > 0) zooms in
+        views = []
+        for (lo, hi), centre, full in (
+            (ax.get_xlim(), event.xdata, self._full_view()[0]),
+            (ax.get_ylim(), event.ydata, self._full_view()[1]),
+        ):
+            width = min(
+                max((hi - lo) * scale, _MIN_VIEW_PIXELS), full[1] - full[0]
+            )
+            # The point under the mouse stays under the mouse.
+            lo = centre - (centre - lo) / (hi - lo) * width
+            views.append(self._clamp(lo, lo + width, full))
+        ax.set_xlim(views[0])
+        ax.set_ylim(views[1])
+        self.canvas.draw_idle()
 
     @staticmethod
     def _rate_step(

@@ -40,6 +40,19 @@ def bitfile_dir() -> str:
     return os.path.join(_base(), "params", "camera", "bitfile")
 
 
+def masks_dir() -> str:
+    """Where saved pixel masks are written and read.
+
+    dapkel_rtp/params/masks/ in the source tree. A frozen exe cannot use its
+    own copy of that folder: the onefile bundle is unpacked to a temporary
+    folder that is deleted on exit, taking any mask saved there with it. So
+    the exe keeps them in a 'masks' folder beside itself instead.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "masks")
+    return os.path.join(_base(), "params", "masks")
+
+
 def params_camera_dir() -> str:
     """dapkel_rtp/params/camera/ — legacy cwd for Kelpie_v2_pwr_mgt.exe.
 

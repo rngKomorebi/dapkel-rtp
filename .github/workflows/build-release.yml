@@ -40,6 +40,26 @@ jobs:
         working-directory: src
         run: pyinstaller --clean main.spec
 
+      # Start the exe that is about to be published and let it check itself:
+      # with DAPKEL_RTP_SMOKE_TEST set it builds the main window, checks that
+      # the helper exes, programs, bitfiles and icons were bundled, quits, and
+      # writes what it found to that file (see src/dapkel_rtp/gui/smoke.py).
+      # A failure here stops the release. The timeout is for the one failure
+      # that does not exit: a windowed PyInstaller exe that crashes on start
+      # waits behind an error dialog nobody will click.
+      - name: Smoke-test the executable
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "smoke.txt"
+          $env:DAPKEL_RTP_SMOKE_TEST = $report
+          $p = Start-Process -FilePath "src\dist\DAPKEL-RTP.exe" -PassThru -Wait
+          if (Test-Path $report) { Get-Content $report } else { Write-Output "No report written." }
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $report)) {
+            Write-Output "::error::The built exe failed its smoke test (exit code $($p.ExitCode))."
+            exit 1
+          }
+
       - name: Collect version and commit
         id: vars
         shell: bash

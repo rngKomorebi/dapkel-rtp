@@ -34,7 +34,15 @@ def dark_title_bar(widget):
         dwm = ctypes.windll.dwmapi
     except (AttributeError, OSError):
         return
-    hwnd = wintypes.HWND(int(widget.winId()))
+    # WinIdChange also fires while a handle is being torn down or replaced
+    # (setWindowFlags does that). There is nothing to darken then, and winId()
+    # either comes back as None or, with no native window, would create one.
+    if not widget.testAttribute(QtCore.Qt.WA_WState_Created):
+        return
+    wid = widget.winId()
+    if wid is None or not int(wid):
+        return
+    hwnd = wintypes.HWND(int(wid))
     on = ctypes.c_int(1)
     for attribute in (_DWMWA_DARK, _DWMWA_DARK_LEGACY):
         result = dwm.DwmSetWindowAttribute(

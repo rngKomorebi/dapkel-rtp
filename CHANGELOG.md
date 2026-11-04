@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-04
+
+### Added
+
+- Hot-pixel masking in Live View, ported from daplis-rtp. Ctrl+click a pixel
+  on the map to mask or unmask it, or open *Edit mask…* for a window that
+  lists the masked pixels and takes new ones typed as `row,col` (ranges
+  allowed, e.g. `30,0-3`). A masked pixel is drawn blank with a cross and left
+  out of the colour scale, the mean/median/max and the peak occupancy, and the
+  map already on screen is redrawn at once. 32×32 and 64×64 keep separate
+  masks. *Reset mask* clears it. The mask lives in `gui/pixel_mask.py`.
+- *Save mask…* / *Load mask…* in Live View. Saving asks for the
+  daughterboard and motherboard (e.g. D0 and M0) and writes `D0_M0.json`,
+  which holds one mask per map (`32x32`, `64x64`) as `[row, col]` pairs;
+  saving one map keeps the other, and replacing a different saved mask asks
+  first. Files go to `src/dapkel_rtp/params/masks/`, or to a `masks` folder
+  beside the exe when frozen, since the onefile bundle's own folder is
+  deleted on exit.
+- A test suite (`tests/`, run with `pytest` after `pip install -e ".[dev]"`)
+  and a *Tests* workflow that runs it on every push and pull request, on
+  Windows and Ubuntu for Python 3.10–3.15. No camera is needed: the tests
+  write synthetic `.bin` files with known pixel fields and check `unpack`,
+  the hitmap and its block-replay detection, the data-quality verdicts and
+  the `metadata.json` store against them, and build the full GUI window
+  headless. Before this nothing was tested, and the only CI job built the
+  exe on Python 3.11.
+- The release workflow starts the exe it built before publishing it. With
+  `DAPKEL_RTP_SMOKE_TEST` set to a file path, the exe builds its main window,
+  checks that the helper exes, programs, bitfiles and icons were bundled,
+  quits on its own and writes what it found to that file
+  (`gui/smoke.py`). A build that fails this is not released. Before, nothing
+  ever started the published exe, so a file missing from `main.spec` would
+  only have shown up on a user's PC.
+- Clear messages when the PC cannot run the helper exes
+  (`functions/system_check.py`). A helper that Windows refuses to start,
+  because the Visual C++ 2015–2022 runtime is missing, reports which DLLs
+  are missing from System32 and where to get the redistributable. Before,
+  it reported only `exit code 3221225781`, and the live view retried that
+  forever. An Output Folder, file name or program path with characters
+  outside the PC's ANSI code page is refused before the exe starts: both
+  helpers read their arguments as ANSI, so the exe would have got `?` in
+  their place. The README has a new *System requirements* section listing
+  the Visual C++ runtime and the Opal Kelly USB driver.
+
+### Changed
+
+- Dependencies are capped below their next major version (`numpy<3`,
+  `matplotlib<4`, `PyQt5<6`) in both `pyproject.toml` and `requirements.txt`.
+  They had lower bounds only, so the next major release would have been
+  installed — and frozen into the next exe — untested. A test now fails when
+  the two files disagree.
+
+### Fixed
+
+- `gui/gui/worker.py` could not be imported outside Windows: it read
+  `subprocess.CREATE_NO_WINDOW`, which exists only there, so the GUI failed
+  to open on Linux or macOS. It now falls back to no flag, as
+  `functions/metadata.py` already did.
+- A `TypeError` in `title_bar.dark_title_bar` printed in the interactive
+  window on some interactions: Qt sends `WinIdChange` while a window's native
+  handle is torn down or replaced, when `winId()` is `None`. Such a window is
+  now skipped.
+- Mouse zoom in Live View: scroll to zoom about the pixel under the mouse,
+  drag to pan, double-click for the whole map. The zoom survives refreshes,
+  window resizes and a restart in the same mode, and the toolbar's Home still
+  returns to the full view.
+
 ## [0.4.1] - 2026-11-02
 
 ### Changed

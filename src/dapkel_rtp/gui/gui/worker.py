@@ -7,6 +7,10 @@ import time
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from dapkel_rtp.functions.system_check import (
+    explain_exit_code,
+    unpassable_argument,
+)
 from dapkel_rtp.functions.timing import CLK_PERIOD
 
 # ---------------------------------------------------------------------------
@@ -20,7 +24,40 @@ CLK_SHIFT = 2400
 # When this app itself has no console -- the case for the --noconsole
 # PyInstaller build -- Windows would otherwise flash open a brand new
 # console window for each one. Passed to every subprocess.run() call below.
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+# getattr: the flag exists only on Windows, and this module must still import
+# elsewhere (the GUI tests build the window on Linux too).
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _refuse_args(cmd: list[str]) -> str | None:
+    """Why a helper exe cannot be given these arguments, or None if it can.
+
+    The exes read argv in the ANSI code page (see 'functions.system_check'),
+    so a path outside it would reach them as '?' and the run would write to,
+    or read from, somewhere that does not exist.
+    """
+    bad = unpassable_argument(cmd[1:])
+    if bad is None:
+        return None
+    return (
+        f"Cannot pass {bad!r} to {os.path.basename(cmd[0])}: it contains "
+        "characters this PC's ANSI code page lacks, which the exe would "
+        "receive as '?'. Use a folder and file name with plain ASCII "
+        "characters only (for a program file, run the app from such a path)."
+    )
+
+
+def _failure(what: str, returncode: int) -> tuple[str, bool]:
+    """Message for a helper's non-zero exit, and whether retrying is futile.
+
+    Futile when Windows refused to start the exe at all (a missing Visual C++
+    runtime, say): every retry fails the same way, so say how to fix it once
+    rather than repeating the exit code forever.
+    """
+    explained = explain_exit_code(returncode)
+    if explained is not None:
+        return explained, True
+    return f"{what} failed (exit code {returncode})", False
 
 
 # The live view keeps running until the user stops it. A pass can fail for
@@ -52,10 +89,11 @@ def _truncate_bin(filepath: str) -> None:
 
 def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
     """Synchronous, non-signalling variant of PowerMgtWorker.run() for use
-    inside another worker's loop. Returns (success, message)."""
+    inside another worker's loop. Returns (success, message, fatal), fatal
+    meaning a retry cannot succeed."""
     exe_path = os.path.join(exe_dir, "Kelpie_v2_pwr_mgt.exe")
     if not os.path.isfile(exe_path):
-        return False, f"Kelpie_v2_pwr_mgt.exe not found at: {exe_path}"
+        return False, f"Kelpie_v2_pwr_mgt.exe not found at: {exe_path}", True
 
     cmd = [
         exe_path,
@@ -66,6 +104,9 @@ def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
         program_file,
         str(CLK_SHIFT),
     ]
+    refused = _refuse_args(cmd)
+    if refused is not None:
+        return False, refused, True
     try:
         result = subprocess.run(
             cmd,
@@ -75,14 +116,12 @@ def _run_pwr_mgt_sync(exe_dir: str, program_file: str, cwd: str) -> tuple:
             creationflags=_NO_WINDOW,
         )
     except OSError as exc:
-        return False, str(exc)
+        return False, str(exc), False
 
     if result.returncode != 0:
-        return (
-            False,
-            f"Power management failed (exit code {result.returncode})",
-        )
-    return True, "ok"
+        msg, fatal = _failure("Power management", result.returncode)
+        return False, msg, fatal
+    return True, "ok", False
 
 
 class PowerMgtWorker(QThread):
@@ -114,6 +153,10 @@ class PowerMgtWorker(QThread):
             self._program_file,
             str(CLK_SHIFT),
         ]
+        refused = _refuse_args(cmd)
+        if refused is not None:
+            self.finished.emit(False, refused)
+            return
         self.log.emit(f"Running: {os.path.basename(exe_path)}")
         self.log.emit(
             f"  nbits={NBITS}, clk_shift={CLK_SHIFT}"
@@ -136,10 +179,8 @@ class PowerMgtWorker(QThread):
         if output:
             self.log.emit(f"  {output.replace(chr(10), chr(10) + '  ')}")
         if result.returncode != 0:
-            self.finished.emit(
-                False,
-                f"Power management failed (exit code {result.returncode})",
-            )
+            msg, _ = _failure("Power management", result.returncode)
+            self.finished.emit(False, msg)
             return
 
         self.finished.emit(True, "Power management initialisation complete.")
@@ -222,6 +263,13 @@ class AcquisitionWorker(QThread):
                 folder_exe,
                 filename_i,
             ]
+            refused = _refuse_args(cmd)
+            if refused is not None:
+                self._write_metadata(
+                    settings, "failed", started, time.time(), elapsed, written
+                )
+                self.finished.emit(False, refused)
+                return
             self.log.emit(f"[{i + 1}/{nacq}] Running: {filename_i}")
 
             t0 = time.perf_counter()
@@ -242,10 +290,8 @@ class AcquisitionWorker(QThread):
                 self._write_metadata(
                     settings, "failed", started, time.time(), elapsed, written
                 )
-                self.finished.emit(
-                    False,
-                    f"Acquisition {i + 1} failed (exit code {result.returncode})",
-                )
+                msg, _ = _failure(f"Acquisition {i + 1}", result.returncode)
+                self.finished.emit(False, msg)
                 return
 
             elapsed.append(took)
@@ -494,6 +540,10 @@ class LiveViewWorker(QThread):
                 folder_exe,
                 p["filename"],
             ]
+            refused = _refuse_args(cmd)
+            if refused is not None:
+                self.error.emit(refused)
+                return
             try:
                 result = subprocess.run(
                     cmd,
@@ -510,6 +560,10 @@ class LiveViewWorker(QThread):
             if self._abort:
                 break
             if result.returncode != 0:
+                msg, fatal = _failure("Acquisition", result.returncode)
+                if fatal:
+                    self.error.emit(msg)
+                    return
                 # Retry instead of ending the preview -- the next acquisition
                 # usually succeeds, and the user decides when to stop.
                 retries += 1
@@ -589,9 +643,12 @@ class LiveViewWorker(QThread):
                     return
 
                 self.stage.emit(f"Programming {tag} ({i + 1}/4)…")
-                ok, msg = _run_pwr_mgt_sync(
+                ok, msg, fatal = _run_pwr_mgt_sync(
                     p["exe_dir"], quadrant_programs[tag], pwr_cwd
                 )
+                if not ok and fatal:
+                    self.error.emit(f"{tag} programming failed: {msg}")
+                    return
                 if not ok:
                     retries += 1
                     self.error.emit(
@@ -614,6 +671,10 @@ class LiveViewWorker(QThread):
                     folder_exe,
                     filename,
                 ]
+                refused = _refuse_args(cmd)
+                if refused is not None:
+                    self.error.emit(refused)
+                    return
                 try:
                     result = subprocess.run(
                         cmd,
@@ -630,6 +691,10 @@ class LiveViewWorker(QThread):
                     self._retry_pause()
                     break
                 if result.returncode != 0:
+                    msg, fatal = _failure(f"{tag} acquisition", result.returncode)
+                    if fatal:
+                        self.error.emit(msg)
+                        return
                     retries += 1
                     self.error.emit(
                         f"{tag} acquisition failed (exit code "
