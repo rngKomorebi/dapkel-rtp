@@ -113,4 +113,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # Set only by the release workflow, to check that the built exe starts and
+    # carries its helper files before it is published (see gui/smoke.py).
+    _smoke_report = os.environ.get("DAPKEL_RTP_SMOKE_TEST")
+    if _smoke_report:
+        from dapkel_rtp.gui.smoke import run_smoke_test
+
+        sys.exit(run_smoke_test(_smoke_report, main))
     main()

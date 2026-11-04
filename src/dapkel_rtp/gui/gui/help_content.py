@@ -170,7 +170,10 @@ writing one <code>.bin</code> per run into the output folder.</p>
 <tr><th>Control</th><th>What it does</th></tr>
 <tr><td>Output Folder</td><td>Where the files and
 <code>metadata.json</code> go. Created if it does not exist. Defaults to
-<code>functions/data</code>.</td></tr>
+<code>functions/data</code>. Keep the path to plain ASCII characters:
+<code>Kelpie_v2.exe</code> receives it in the PC's ANSI code page, so other
+characters (Cyrillic, for example) would reach it as <code>?</code>. A run
+with such a folder does not start, and the message names the path.</td></tr>
 <tr><td>Program</td><td>The SPAD program, listed by file name
 (<code>program_ORT.txt</code>, &hellip;). Defaults to <b>ORT</b>. Changing it
 runs Power Mgt, which loads the new program onto the FPGA.</td></tr>
@@ -252,7 +255,10 @@ side in the folder.</p>
 <tr><th>Control</th><th>What it does</th></tr>
 <tr><td>Output Folder</td><td>Where every job's files and
 <code>metadata.json</code> go. Created if it does not exist. Defaults to
-<code>functions/data</code>.</td></tr>
+<code>functions/data</code>. Keep the path to plain ASCII characters:
+<code>Kelpie_v2.exe</code> receives it in the PC's ANSI code page, so other
+characters (Cyrillic, for example) would reach it as <code>?</code>. A chain
+with such a folder does not start, and the message names the path.</td></tr>
 <tr><td>Firmware</td><td>Which FPGA bitstream to load.
 <code>short_exposure</code>: every frame is a fixed 9&nbsp;&micro;s.
 <code>long_exposure</code>: every frame is the shutter time plus
@@ -357,7 +363,11 @@ the FPGA before each, and interleaves the four into the full array. This is
 slower, needs all four program files, and leaves the FPGA in an unknown state
 for the other tabs.</td></tr>
 <tr><td>Output Folder</td><td>Where <code>live.bin</code> is written.
-Defaults to <code>functions/live</code>.</td></tr>
+Defaults to <code>functions/live</code>. Keep the path to plain ASCII
+characters: <code>Kelpie_v2.exe</code> receives it in the PC's ANSI code
+page, so other characters (Cyrillic, for example) would reach it as
+<code>?</code>. The live view does not start with such a folder, and the
+message names the path.</td></tr>
 <tr><td>Program</td><td>The SPAD program, 32&times;32 mode only. Defaults to
 <b>ORC</b>. Changing it runs Power Mgt, which loads the new program onto the
 FPGA.</td></tr>
@@ -400,6 +410,17 @@ greyed out in 64&times;64 mode, which loads its own programs.</td></tr>
 program. In 64&times;64 mode it is always available.</td></tr>
 <tr><td>&#9632; Stop</td><td>Ends the preview once the acquisition in
 progress finishes.</td></tr>
+<tr><td><i>n masked</i></td><td>How many pixels of the map in view are
+masked. It sits beside the plot toolbar.</td></tr>
+<tr><td>Edit mask&hellip;</td><td>Opens the pixel mask in a window of its own,
+which can stay open beside the map while the preview runs. See <i>Masking hot
+pixels</i> below.</td></tr>
+<tr><td>Reset mask</td><td>Unmasks every pixel of the map in view.</td></tr>
+<tr><td>Save mask&hellip;</td><td>Saves the mask of the map in view under a
+daughterboard and motherboard. See <i>Saving and loading a mask</i>
+below.</td></tr>
+<tr><td>Load mask&hellip;</td><td>Replaces the mask of the map in view with
+one saved earlier.</td></tr>
 </table>
 <p>You can change <b>Frames/acq</b> and <b>Shutter</b> while the preview is
 running. The change applies to the next acquisition.</p>
@@ -423,7 +444,69 @@ warns <i>&ldquo;no frame carried data &mdash; chip idle?&rdquo;</i></li>
 <li>A failed acquisition is reported in the status line and retried; it does
 not stop the preview.</li>
 </ul>
-<p>The toolbar above the plot zooms, pans and saves the image.</p>
+<h3>Masking hot pixels</h3>
+<p>A masked pixel is drawn blank with a cross over it, and is left out of
+everything read off the map: the colour scale, the mean, median and max in
+the title, and the peak occupancy. One hot pixel no longer sets the top of
+the colour bar, so the rest of the map gets the full colour range. The status
+line says how many masked pixels were left out. A mask takes effect at once,
+on the map already shown, also when the preview is stopped.</p>
+<ul>
+<li><b>Ctrl+click</b> a pixel on the map to mask it. Ctrl+click it again to
+unmask it. This does nothing while the toolbar's pan or zoom tool is
+selected.</li>
+<li><b>Edit mask&hellip;</b> opens a window that lists the masked pixels as
+<i>row r, col c</i>, with the count under the list. Type pixels into the box
+at the top as <code>row,col</code> entries separated by semicolons, and click
+<b>Mask</b> or <b>Unmask</b>; Enter means Mask. Either half of an entry may be
+a range: <code>5,12; 30,0-3</code> is pixel (5,&nbsp;12) plus columns 0 to 3
+of row 30 (<code>30,0:3</code> works too). Double-click a pixel in the list,
+or select several and click <b>Unmask selected</b>, to unmask them.
+<b>Clear all</b> unmasks every pixel of the map in view. <b>Close</b> hides
+the window and keeps the mask.</li>
+<li><b>Reset mask</b> beside the toolbar does the same as <b>Clear
+all</b>.</li>
+</ul>
+<p>Rows and columns are the ones on the plot's axes. 32&times;32 and
+64&times;64 mode keep separate masks, because pixel (5,&nbsp;12) is a
+different SPAD in each; switching the mode switches the mask shown. The mask
+is not remembered when the application closes; save it to use it again.</p>
+<h3>Saving and loading a mask</h3>
+<ul>
+<li><b>Save mask&hellip;</b> asks for the <b>daughterboard</b> and
+<b>motherboard</b>, for example <code>D0</code> and <code>M0</code>. A plain
+number gets the letter added: typing <code>0</code> in both boxes also gives
+D0 and M0. The window shows the file it will write, named after the two
+boards: <code>D0_M0.json</code>.</li>
+<li>One file holds a 32&times;32 mask and a 64&times;64 mask for the same
+boards. Saving writes only the mask of the map in view and keeps the other.
+If the file already has a different mask for this map, you are asked before
+it is replaced.</li>
+<li><b>Load mask&hellip;</b> lists the saved files by name and replaces the
+mask of the map in view with the one saved for it. If the file has no mask
+for this map (for example only a 32&times;32 one while you are in
+64&times;64 mode), a message says so and the mask is left as it was.</li>
+<li>Run from the source code, the files are kept in
+<code>src/dapkel_rtp/params/masks/</code>. Run as <code>DAPKEL-RTP.exe</code>,
+they are kept in a <code>masks</code> folder next to the exe, because the exe
+unpacks itself to a temporary folder that is deleted when it closes. The
+tooltip on Save mask&hellip; shows the folder in use.</li>
+<li>The file is plain JSON and can be edited by hand: each pixel is one
+<code>[row, col]</code> line under <code>"32x32"</code> or
+<code>"64x64"</code>. A pixel outside the map stops the file loading, with a
+message naming it.</li>
+</ul>
+<h3>Zooming and panning</h3>
+<ul>
+<li><b>Scroll</b> over the map to zoom in or out around the pixel under the
+mouse.</li>
+<li><b>Drag</b> with the left button to move a zoomed map around.</li>
+<li><b>Double-click</b> the map to see the whole map again. The toolbar's
+Home button does the same.</li>
+</ul>
+<p>The zoom stays while the preview refreshes, when the window is resized and
+when you stop and start again in the same mode. The toolbar above the plot
+still has its own pan and zoom tools, and saves the image.</p>
 """,
     ),
     (
@@ -564,6 +647,12 @@ tag, set Program to Timestamp.</td></tr>
 <tr><td>Help &rarr; User guide (opens at the tab in front)</td><td>F1</td></tr>
 <tr><td>View &rarr; Preferences&hellip;</td><td>Ctrl+,</td></tr>
 <tr><td>Data Quality: check a file</td><td>double-click it</td></tr>
+<tr><td>Live View: mask or unmask a pixel</td><td>Ctrl+click it on the
+map</td></tr>
+<tr><td>Live View: zoom in or out</td><td>scroll over the map</td></tr>
+<tr><td>Live View: move a zoomed map</td><td>drag it</td></tr>
+<tr><td>Live View: whole map again</td><td>double-click the map</td></tr>
+<tr><td>Live View mask window: mask the pixels typed</td><td>Enter</td></tr>
 </table>
 <p>The plot toolbars (Live View, Data Quality) are matplotlib's: Home resets
 the view, the arrows step through zoom history, the cross pans, the
