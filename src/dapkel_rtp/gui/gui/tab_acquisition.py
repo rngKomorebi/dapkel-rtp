@@ -32,11 +32,17 @@ from ._paths import (
     BITFILE_NAME,
     FIRMWARE_LONG_EXPOSURE,
     FIRMWARE_SHORT_EXPOSURE,
-    firmware_bitfile,
     functions_dir,
     programs_dir,
-    resolve_pwr_mgt_cwd,
 )
+from .firmware_store import (
+    firmware_metadata,
+    is_custom,
+    label_of,
+    resolve_bitstream,
+    timing_of,
+)
+from .firmware_widgets import FirmwareCombo
 from .fpga_state import FPGA
 from .widgets import FRAMES_TIP_BLOCK, TimedProgressBar, make_nframes_combo
 from .worker import CLK_SHIFT, NBITS, AcquisitionWorker, PowerMgtWorker
@@ -86,6 +92,11 @@ FIRMWARE_TIP = (
     "short_exposure: the frame is always 9 µs; the shutter opens for part\n"
     "of it (50-500 ns in practice).\n"
     "long_exposure: the frame is shutter + 9 µs.\n"
+    "\n"
+    "\"Add custom firmware…\" at the bottom of the list adds another .bit\n"
+    "(an external-APD build, say). It is copied into this install's\n"
+    "firmware folder and listed here from then on, with the timing model\n"
+    "you chose for it. \"Remove custom firmware…\" deletes that copy.\n"
     "\n"
     "Recorded in metadata.json together with the bitstream's SHA-256."
 )
@@ -252,7 +263,7 @@ class AcquisitionTab(QWidget):
         # Connected after the initial population settles, so app startup
         # doesn't auto-trigger a Power Mgt run before the user does anything.
         self.program_combo.currentIndexChanged.connect(self._on_program_change)
-        self.firmware_combo.currentIndexChanged.connect(self._on_firmware_change)
+        self.firmware_combo.firmwareChanged.connect(self._on_firmware_change)
         for spin in (self.exp_spin, self.nacq_spin):
             spin.valueChanged.connect(self._refresh_frame_label)
         self.nframes_combo.currentIndexChanged.connect(self._refresh_frame_label)
@@ -357,18 +368,9 @@ class AcquisitionTab(QWidget):
         fw_row.setSpacing(8)
 
         fw_row.addWidget(QLabel("Firmware:"))
-        self.firmware_combo = QComboBox()
+        self.firmware_combo = FirmwareCombo()
         self.firmware_combo.setMinimumWidth(200)
         self.firmware_combo.setToolTip(FIRMWARE_TIP)
-        for version, text in (
-            (FIRMWARE_SHORT_EXPOSURE, "short_exposure  (9 µs frame)"),
-            (FIRMWARE_LONG_EXPOSURE, "long_exposure  (shutter + 9 µs)"),
-        ):
-            missing = firmware_bitfile(version) is None
-            self.firmware_combo.addItem(
-                text + ("   [bitstream missing]" if missing else ""),
-                userData=version,
-            )
         fw_row.addWidget(self.firmware_combo)
 
         self.frame_label = QLabel()
@@ -474,9 +476,14 @@ class AcquisitionTab(QWidget):
     # ------------------------------------------------------------------
 
     def _firmware(self) -> str:
-        return self.firmware_combo.currentData() or FIRMWARE_SHORT_EXPOSURE
+        """The selected firmware key -- which bitstream (see firmware_store)."""
+        return self.firmware_combo.key()
 
-    def _on_firmware_change(self, _idx: int = 0):
+    def _timing(self) -> str:
+        """The timing model the selected firmware follows."""
+        return timing_of(self._firmware()) or FIRMWARE_SHORT_EXPOSURE
+
+    def _on_firmware_change(self, _key: str = ""):
         """Relabel the shutter box for the new firmware, then reprogram.
 
         Both halves matter: the same register means a different thing in each
@@ -492,7 +499,7 @@ class AcquisitionTab(QWidget):
             before, after = clamped
             self._log(
                 f"Shutter time capped at {after:.3f} µs by "
-                f"{self._firmware()} (was {before:.3f} µs)."
+                f"{label_of(self._firmware())} (was {before:.3f} µs)."
             )
 
     def _on_exp_context_change(self) -> tuple[float, float] | None:
@@ -501,7 +508,7 @@ class AcquisitionTab(QWidget):
         Returns ``(before, after)`` when the new cap moved the value, so the
         caller can report it, else None.
         """
-        ui = EXP_UI[self._firmware()]
+        ui = EXP_UI[self._timing()]
         self.exp_label.setText(ui["label"])
         self.exp_spin.setToolTip(ui["tip"])
         before = self.exp_spin.value()
@@ -516,7 +523,7 @@ class AcquisitionTab(QWidget):
         shutter_us = self.exp_spin.value()
         frame_us = (
             shutter_us + FRAME_READOUT_US
-            if self._firmware() == FIRMWARE_LONG_EXPOSURE
+            if self._timing() == FIRMWARE_LONG_EXPOSURE
             else FRAME_READOUT_US
         )
         total_s = (
@@ -561,7 +568,7 @@ class AcquisitionTab(QWidget):
             return
         program, firmware = FPGA.loaded
         self.fpga_label.setText(
-            f"FPGA: {firmware} · {os.path.basename(program)}"
+            f"FPGA: {label_of(firmware)} · {os.path.basename(program)}"
         )
 
     # ------------------------------------------------------------------
@@ -594,10 +601,14 @@ class AcquisitionTab(QWidget):
             return
 
         firmware = self._firmware()
-        cwd, bitfile = resolve_pwr_mgt_cwd(firmware)
+        name = label_of(firmware)
+        cwd, bitfile, _, fell_back = resolve_bitstream(firmware)
         if bitfile is None:
             self._log(
-                f"ERROR: no {BITFILE_NAME} for {firmware}, and none in the "
+                f"ERROR: the custom firmware {name} has no {BITFILE_NAME} in "
+                f"{os.path.join(cwd, 'bitfile')}. Add it again."
+                if is_custom(firmware)
+                else f"ERROR: no {BITFILE_NAME} for {name}, and none in the "
                 f"legacy folder either. Put one in "
                 f"{os.path.join(cwd, 'bitfile')}."
             )
@@ -608,8 +619,8 @@ class AcquisitionTab(QWidget):
         self.program_combo.setEnabled(False)
         self.firmware_combo.setEnabled(False)
         self.log_edit.clear()
-        self._log(f"--- Power management initialisation ({firmware}) ---")
-        if firmware_bitfile(firmware) is None:
+        self._log(f"--- Power management initialisation ({name}) ---")
+        if fell_back:
             # The selection cannot be honoured, so say so rather than let the
             # log imply the requested firmware was loaded.
             self._log(
@@ -691,7 +702,8 @@ class AcquisitionTab(QWidget):
             f"  |  shutter={exposure_time} clks ({self.exp_spin.value():.3f} µs)"
         )
         self._log(
-            f"Firmware: {meta['firmware_version']}  |  "
+            f"Firmware: {meta['firmware_name']} "
+            f"({meta['firmware_version']} timing)  |  "
             f"{self.frame_label.text().replace(chr(183), '|')}  |  bias="
             + (
                 f"{meta['bias_voltage_v']:g} V"
@@ -722,21 +734,12 @@ class AcquisitionTab(QWidget):
         The worker fills in everything it passed to the exe, so nothing here
         can disagree with what was actually run. See 'functions.metadata'.
         """
-        firmware = self._firmware()
-        _, resolved_bit = resolve_pwr_mgt_cwd(firmware)
         bias = self.bias_spin.value()
         loaded = FPGA.loaded
         return {
             "program_file": program_path,
-            "firmware_version": firmware,
-            "firmware_bitfile": resolved_bit,
-            "firmware_bitfile_source": (
-                firmware
-                if firmware_bitfile(firmware) is not None
-                else "legacy fallback (params/camera/bitfile)"
-            ),
-            "firmware_programmed_this_session": bool(
-                loaded is not None and loaded[1] == firmware
+            **firmware_metadata(
+                self._firmware(), loaded[1] if loaded is not None else None
             ),
             "chip_config_bits": dict(self._chip_state),
             # 0 shows blank in the box and means "not recorded" -- better an
@@ -747,7 +750,12 @@ class AcquisitionTab(QWidget):
                 "program_file": (
                     os.path.basename(loaded[0]) if loaded is not None else None
                 ),
-                "firmware_version": loaded[1] if loaded is not None else None,
+                "firmware_version": (
+                    timing_of(loaded[1]) if loaded is not None else None
+                ),
+                "firmware_name": (
+                    label_of(loaded[1]) if loaded is not None else None
+                ),
                 "clk_shift": CLK_SHIFT,
                 "nbits": NBITS,
             },

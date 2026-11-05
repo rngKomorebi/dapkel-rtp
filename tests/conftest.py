@@ -6,10 +6,16 @@ against what was written rather than against another decode.
 """
 
 import os
+import tempfile
 
 # Before anything imports Qt: the GUI tests build real widgets, and CI runners
 # (and a test run over SSH) have no display to put them on.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# Masks and custom firmware live in the user's own folder under LOCALAPPDATA
+# ('_paths.user_data_dir'). Building the window touches it, so point it at a
+# throwaway folder: a test run must not write into the real profile.
+os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="dapkel-rtp-tests-")
 
 import numpy as np
 import pytest

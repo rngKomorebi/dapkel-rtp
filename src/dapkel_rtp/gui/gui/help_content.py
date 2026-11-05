@@ -94,6 +94,36 @@ missing, its entry in the Firmware box says <i>[bitstream missing]</i> and
 Power Mgt falls back to the legacy <code>params/camera/bitfile/</code>, saying
 so in the log. If you switch firmware while the shutter is above the new
 maximum, the shutter is lowered to fit and the log says so.</p>
+<h4>Custom firmware</h4>
+<p>A bitstream other than the two shipped ones (an external-APD build, a test
+build from the FPGA designers) is added from the Firmware box itself: choose
+<b>Add custom firmware&hellip;</b> at the bottom of the list, pick the
+<code>.bit</code> file, give it a name, and say which timing it follows,
+<code>short_exposure</code> (fixed 9&nbsp;&micro;s frame) or
+<code>long_exposure</code> (shutter + 9&nbsp;&micro;s). The timing decides
+what the Shutter box means and the frame length shown beside it, so ask the
+FPGA designers if unsure.</p>
+<p>The app copies the file into your own user folder,
+<code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;firmware</code> (the same folder whether you run the exe or the source
+code; <b>Open firmware folder&hellip;</b> at the bottom of the Firmware box
+shows it in Explorer). Nothing is written next to the exe, so keeping the exe
+on the desktop adds no folder there. From then on the firmware is listed in
+the Firmware box on Single Acquisition, Chain Acquisition and Live View,
+including after a restart, with a newer exe downloaded anywhere, and even if
+the original file is moved or deleted. Each Windows user has their own list.
+The shipped
+<code>short_exposure</code> and <code>long_exposure</code> bitstreams are never
+changed, and the downloaded release exe stays the same for everyone else.
+Unlike the shipped two, a custom firmware never falls back to the legacy
+bitstream: if its copy is gone, Power Mgt stops and says so.</p>
+<p>In <code>metadata.json</code>, <code>firmware_version</code> is the timing
+(<code>short_exposure</code> or <code>long_exposure</code>, as the analysis
+code expects), <code>firmware_name</code> is the name you gave, and
+<code>firmware_bitfile_source</code> and <code>firmware_bitfile_sha256</code>
+say exactly which file was loaded.</p>
+<p><b>Remove custom firmware&hellip;</b> (shown once one has been added)
+deletes the app's copy, not the original file. Select a different firmware in
+every Firmware box first: one that is still selected cannot be removed.</p>
 
 <h3>Power Mgt and the FPGA state</h3>
 <p><b>Power Mgt</b> runs <code>Kelpie_v2_pwr_mgt.exe</code>, which loads the
@@ -215,7 +245,7 @@ separate settings.</td></tr>
 9&nbsp;&micro;s of readout. Changing it runs Power Mgt. If the shutter is
 above the new firmware's limit, it is lowered to fit and the log says so. An
 entry marked <i>[bitstream missing]</i> loads the legacy bitstream instead,
-and the log says so.</td></tr>
+and the log says so. <b>Add custom firmware&hellip;</b> at the bottom of the list adds another bitstream (a <code>.bit</code> file, for example an external-APD build): you give it a name and say whether it follows short_exposure or long_exposure timing, which decides what the Shutter box means. The app keeps its own copy in your user folder, <code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;firmware</code>, so the firmware stays in this list after a restart and with a newer exe, even if the original file is moved or deleted, and nothing is added next to the exe. The shipped bitstreams are not changed. <b>Remove custom firmware&hellip;</b> deletes that copy; a firmware that is selected in any Firmware box cannot be removed. <b>Open firmware folder&hellip;</b> shows the folder in Explorer.</td></tr>
 <tr><td><i>frame label</i></td><td>Length of one frame and the run's total
 camera time (frames &times; #Acq &times; frame length). Check it before a
 long run.</td></tr>
@@ -265,7 +295,7 @@ with such a folder does not start, and the message names the path.</td></tr>
 9&nbsp;&micro;s of readout. Changing it runs Power Mgt. If a job's shutter is
 above the new firmware's limit, it is lowered to fit and the log says so. An
 entry marked <i>[bitstream missing]</i> loads the legacy bitstream instead,
-and the log says so.</td></tr>
+and the log says so. <b>Add custom firmware&hellip;</b> at the bottom of the list adds another bitstream (a <code>.bit</code> file, for example an external-APD build): you give it a name and say whether it follows short_exposure or long_exposure timing, which decides what the Shutter box means. The app keeps its own copy in your user folder, <code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;firmware</code>, so the firmware stays in this list after a restart and with a newer exe, even if the original file is moved or deleted, and nothing is added next to the exe. The shipped bitstreams are not changed. <b>Remove custom firmware&hellip;</b> deletes that copy; a firmware that is selected in any Firmware box cannot be removed. <b>Open firmware folder&hellip;</b> shows the folder in Explorer.</td></tr>
 <tr><td>Bias</td><td>SPAD bias voltage, <b>for the record only</b>: the app
 cannot set it, so set it on the supply. The value is written to
 <code>metadata.json</code>. Defaults to 22&nbsp;V; set it to 0 to leave it
@@ -377,7 +407,8 @@ FPGA.</td></tr>
 9&nbsp;&micro;s of readout. The frame length is what the rate is divided by.
 On this tab, changing the firmware does <b>not</b> run Power Mgt by itself:
 press Power Mgt afterwards. If the shutter is above the new firmware's limit,
-it is lowered to fit and the status line says so.</td></tr>
+it is lowered to fit and the status line says so. For a custom firmware the
+rate is divided by the frame length of the timing it was added with. <b>Add custom firmware&hellip;</b> at the bottom of the list adds another bitstream (a <code>.bit</code> file, for example an external-APD build): you give it a name and say whether it follows short_exposure or long_exposure timing, which decides what the Shutter box means. The app keeps its own copy in your user folder, <code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;firmware</code>, so the firmware stays in this list after a restart and with a newer exe, even if the original file is moved or deleted, and nothing is added next to the exe. The shipped bitstreams are not changed. <b>Remove custom firmware&hellip;</b> deletes that copy; a firmware that is selected in any Firmware box cannot be removed. <b>Open firmware folder&hellip;</b> shows the folder in Explorer.</td></tr>
 <tr><td>Frames/acq</td><td>Frames per acquisition (per quadrant in
 64&times;64), from 1 to 1&nbsp;024&nbsp;000 in any step; the arrows step by
 100. Defaults to 1000. More frames give a smoother, more precise map but a
@@ -486,11 +517,15 @@ it is replaced.</li>
 mask of the map in view with the one saved for it. If the file has no mask
 for this map (for example only a 32&times;32 one while you are in
 64&times;64 mode), a message says so and the mask is left as it was.</li>
-<li>Run from the source code, the files are kept in
-<code>src/dapkel_rtp/params/masks/</code>. Run as <code>DAPKEL-RTP.exe</code>,
-they are kept in a <code>masks</code> folder next to the exe, because the exe
-unpacks itself to a temporary folder that is deleted when it closes. The
-tooltip on Save mask&hellip; shows the folder in use.</li>
+<li>The files are kept in your own user folder, <code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;masks</code>,
+whether you run <code>DAPKEL-RTP.exe</code> or the source code. Nothing is
+written next to the exe, so a newer exe, wherever it is saved, finds the same
+masks. The tooltip on Save mask&hellip; shows the folder. The first time the
+app starts with this folder, it copies in any masks saved where earlier
+versions kept them (a <code>masks</code> folder next to the exe, or
+<code>src/dapkel_rtp/params/masks/</code> from source); the old files are left
+where they were, and a file already in the new folder is never
+replaced.</li>
 <li>The file is plain JSON and can be edited by hand: each pixel is one
 <code>[row, col]</code> line under <code>"32x32"</code> or
 <code>"64x64"</code>. A pixel outside the map stops the file loading, with a
@@ -624,6 +659,11 @@ Power Mgt again.</td></tr>
 <code>Kelpie_top.bit</code> in
 <code>params/camera/&lt;firmware&gt;/bitfile/</code>. Until then the legacy
 bitstream is loaded, and the log and metadata say so.</td></tr>
+<tr><td>A custom firmware is no longer in the Firmware box</td><td>Its folder
+inside <code>%LOCALAPPDATA%&#92;DAPKEL&#92;dapkel-rtp&#92;firmware</code> was moved or deleted, or is missing
+<code>firmware.json</code>. Choose <b>Add custom firmware&hellip;</b> and add
+the <code>.bit</code> again. The list is per Windows user: someone logged in
+as a different user has their own, and adds the firmware themselves.</td></tr>
 <tr><td>A run stopped part-way</td><td>Set <b>Start#</b> to one past the last
 file written and run again. Nothing is overwritten.</td></tr>
 <tr><td>Live View: &ldquo;no frame carried data&rdquo;</td><td>The chip

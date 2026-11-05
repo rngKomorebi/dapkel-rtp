@@ -82,12 +82,12 @@ from ._paths import (
     BITFILE_NAME,
     FIRMWARE_LONG_EXPOSURE,
     FIRMWARE_SHORT_EXPOSURE,
-    firmware_bitfile,
     functions_dir,
     masks_dir,
     programs_dir,
-    resolve_pwr_mgt_cwd,
 )
+from .firmware_store import is_custom, label_of, resolve_bitstream, timing_of
+from .firmware_widgets import FirmwareCombo
 from .fpga_state import FPGA
 from .pixel_mask import (
     PixelMaskWindow,
@@ -178,7 +178,7 @@ class LiveViewTab(QWidget):
         self._populate_programs()
         self._on_firmware_change()  # apply the default firmware's shutter rules
         self.program_combo.currentIndexChanged.connect(self._on_program_change)
-        self.firmware_combo.currentIndexChanged.connect(self._on_firmware_change)
+        self.firmware_combo.firmwareChanged.connect(self._on_firmware_change)
         # _on_mode_change's 32x32 branch calls _on_program_change, which
         # would otherwise auto-fire a real Power Mgt run during widget
         # construction, before the user has done anything.
@@ -230,18 +230,9 @@ class LiveViewTab(QWidget):
         # knowing which, the colourbar would be a number with no defensible
         # unit, which is what reading it out of frame_rate_cnt.txt used to be.
         params.addWidget(QLabel("Firmware:"))
-        self.firmware_combo = QComboBox()
+        self.firmware_combo = FirmwareCombo(compact=True)
         self.firmware_combo.setMinimumWidth(175)
         self.firmware_combo.setToolTip(FIRMWARE_TIP)
-        for version, text in (
-            (FIRMWARE_SHORT_EXPOSURE, "short_exposure"),
-            (FIRMWARE_LONG_EXPOSURE, "long_exposure"),
-        ):
-            missing = firmware_bitfile(version) is None
-            self.firmware_combo.addItem(
-                text + ("   [bitstream missing]" if missing else ""),
-                userData=version,
-            )
         params.addWidget(self.firmware_combo)
 
         params.addWidget(QLabel("Frames/acq:"))
@@ -435,11 +426,20 @@ class LiveViewTab(QWidget):
         )
 
     def _firmware(self) -> str:
-        return self.firmware_combo.currentData() or FIRMWARE_SHORT_EXPOSURE
+        """The selected firmware key -- which bitstream (see firmware_store)."""
+        return self.firmware_combo.key()
 
-    def _on_firmware_change(self, _idx: int = 0):
+    def _timing(self) -> str:
+        """The timing model the selected firmware follows.
+
+        What the preview's rate divides by depends on this, not on which
+        bitstream it is -- so it is what the worker is given.
+        """
+        return timing_of(self._firmware()) or FIRMWARE_SHORT_EXPOSURE
+
+    def _on_firmware_change(self, _key: str = ""):
         """Re-label the shutter box for the new firmware, then reprogram."""
-        ui = EXP_UI[self._firmware()]
+        ui = EXP_UI[self._timing()]
         self.exp_label.setText(ui["label"])
         self.exp_spin.setToolTip(ui["tip"])
         before = self.exp_spin.value()
@@ -447,7 +447,8 @@ class LiveViewTab(QWidget):
         after = self.exp_spin.value()
         if after != before:
             self.status_label.setText(
-                f"Shutter capped at {after:.3f} µs by {self._firmware()} "
+                f"Shutter capped at {after:.3f} µs by "
+                f"{label_of(self._firmware())} "
                 f"(was {before:.3f} µs)."
             )
         self._refresh_frame_label()
@@ -458,7 +459,7 @@ class LiveViewTab(QWidget):
         """Show the frame length the previewed rate divides by."""
         frame_us = (
             self.exp_spin.value() + FRAME_READOUT_US
-            if self._firmware() == FIRMWARE_LONG_EXPOSURE
+            if self._timing() == FIRMWARE_LONG_EXPOSURE
             else FRAME_READOUT_US
         )
         self.frame_label.setText(f"{frame_us:.3f} µs/frame")
@@ -509,10 +510,14 @@ class LiveViewTab(QWidget):
             return
 
         firmware = self._firmware()
-        cwd, bitfile = resolve_pwr_mgt_cwd(firmware)
+        cwd, bitfile, _, _ = resolve_bitstream(firmware)
         if bitfile is None:
             self.status_label.setText(
-                f"⚠  No {BITFILE_NAME} for {firmware}, nor in the legacy folder."
+                f"⚠  The custom firmware {label_of(firmware)} has no "
+                f"{BITFILE_NAME} -- add it again."
+                if is_custom(firmware)
+                else f"⚠  No {BITFILE_NAME} for {firmware}, nor in the "
+                "legacy folder."
             )
             return
 
@@ -520,7 +525,9 @@ class LiveViewTab(QWidget):
         self.start_btn.setEnabled(False)
         self.program_combo.setEnabled(False)
         self.firmware_combo.setEnabled(False)
-        self.status_label.setText(f"Initialising FPGA ({firmware})…")
+        self.status_label.setText(
+            f"Initialising FPGA ({label_of(firmware)})…"
+        )
 
         self._pwr_mgt_pending_state = (program_path, firmware)
         self._pwr_worker = PowerMgtWorker(self._exe_dir, program_path, cwd)
@@ -580,8 +587,8 @@ class LiveViewTab(QWidget):
                 "folder": folder,
                 "mode_64": True,
                 "quadrant_programs": quadrant_programs,
-                "pwr_cwd": resolve_pwr_mgt_cwd(self._firmware())[0],
-                "firmware_version": self._firmware(),
+                "pwr_cwd": resolve_bitstream(self._firmware()).cwd,
+                "firmware_version": self._timing(),
                 # All four quadrant programs are S*C, hence count mode; read
                 # it off one of them rather than hardcoding the reduction.
                 "hitmap_mode": mode_for_program(quadrant_programs["S0C"]),
@@ -599,7 +606,7 @@ class LiveViewTab(QWidget):
                 "folder": folder,
                 "filename": "live",
                 "mode_64": False,
-                "firmware_version": self._firmware(),
+                "firmware_version": self._timing(),
                 # The program decides the reduction: summing the counts field
                 # of a timestamp program would sum coarse-timestamp bits.
                 "hitmap_mode": mode_for_program(program_path),

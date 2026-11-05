@@ -29,6 +29,7 @@ def _guide_css() -> str:
 body {{ color: {t.text}; }}
 h2 {{ color: {t.accent}; margin-top: 18px; }}
 h3 {{ color: {t.text}; margin-top: 12px; }}
+h4 {{ color: {t.text_dim}; margin-top: 10px; }}
 a {{ color: {t.accent}; }}
 code {{ font-family: "JetBrains Mono", Consolas, monospace; color: {t.text_dim}; }}
 table {{ border-collapse: collapse; margin: 4px 0 8px 0; }}
