@@ -337,9 +337,12 @@ def build_run_record(
 
         ``folder``, ``filename_prefix``, ``program_tag``, ``mode``,
         ``program_file`` (full path), ``start_index``, ``nacq_requested``,
-        ``nframes``, ``open_shutter_clks``, ``firmware_version``,
+        ``nframes``, ``open_shutter_clks``, ``firmware_version`` (the timing
+        model), ``firmware_name`` (which bitstream; defaults to
+        ``firmware_version``),
         ``firmware_bitfile`` (full path or None), ``firmware_bitfile_source``
-        ('short_exposure' / 'long_exposure' / 'legacy fallback' / None),
+        ('short_exposure' / 'long_exposure' / 'custom: <name> ...' /
+        'legacy fallback' / None),
         ``firmware_programmed_this_session`` (bool), ``chip_config``,
         ``chip_config_bits`` (dict), ``bias_voltage_v`` (float or None),
         ``exe`` (full path to Kelpie_v2.exe), ``power_management`` (dict).
@@ -408,6 +411,10 @@ def build_run_record(
         "n_files": int(n_files_written),
         "total_frames": total_frames,
         "firmware_version": firmware,
+        # Which bitstream: the same word as firmware_version for a shipped
+        # firmware, the name it was added under for a custom one (whose
+        # firmware_version is then the timing model it was added with).
+        "firmware_name": get("firmware_name") or firmware,
         "firmware_bitfile": _basename_or_none(get("firmware_bitfile")),
         "firmware_bitfile_sha256": _sha256(get("firmware_bitfile")),
         # Both firmware folders hold a file called 'Kelpie_top.bit', so the

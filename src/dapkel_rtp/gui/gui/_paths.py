@@ -5,6 +5,7 @@ to ``sys._MEIPASS`` at runtime.  All path helpers here handle both cases.
 """
 
 import os
+import shutil
 import sys
 
 # Re-exported so the GUI has one import for the firmware vocabulary. Defined in
@@ -40,17 +41,88 @@ def bitfile_dir() -> str:
     return os.path.join(_base(), "params", "camera", "bitfile")
 
 
-def masks_dir() -> str:
-    """Where saved pixel masks are written and read.
+def user_data_dir() -> str:
+    """Per-user folder for what the user adds: masks, custom firmware.
 
-    dapkel_rtp/params/masks/ in the source tree. A frozen exe cannot use its
-    own copy of that folder: the onefile bundle is unpacked to a temporary
-    folder that is deleted on exit, taking any mask saved there with it. So
-    the exe keeps them in a 'masks' folder beside itself instead.
+    ``%LOCALAPPDATA%\\DAPKEL\\dapkel-rtp`` on Windows (the same DAPKEL /
+    dapkel-rtp names the theme's QSettings key uses), ``~/.local/share/DAPKEL/
+    dapkel-rtp`` elsewhere. Not beside the exe: people keep the exe on the
+    desktop, and a folder appearing next to it there is clutter -- and a newer
+    exe downloaded to another folder would start with none of it. Not inside
+    the package either: a frozen exe unpacks itself to a temporary folder that
+    is deleted on exit. The exe and a run from source share this folder.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
+    if not base:
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "DAPKEL", "dapkel-rtp")
+
+
+# Written into the masks folder once the old mask folders have been copied in,
+# so a mask deleted from the new folder by hand does not come back next start.
+_MASKS_MIGRATED = ".migrated"
+
+
+def legacy_masks_dirs() -> list[str]:
+    """Where masks were saved before they moved to 'user_data_dir'.
+
+    A 'masks' folder beside the exe when frozen; dapkel_rtp/params/masks/ when
+    run from source.
     """
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "masks")
-    return os.path.join(_base(), "params", "masks")
+        return [os.path.join(os.path.dirname(sys.executable), "masks")]
+    return [os.path.join(_base(), "params", "masks")]
+
+
+def _migrate_masks(folder: str) -> None:
+    """Copy masks from the old folders, once, never over a newer file.
+
+    The old files are left where they are. Failing to copy must not stop the
+    app, so errors are swallowed; the marker is then not written and the copy
+    is tried again next start.
+    """
+    marker = os.path.join(folder, _MASKS_MIGRATED)
+    if os.path.exists(marker):
+        return
+    try:
+        os.makedirs(folder, exist_ok=True)
+        for old in legacy_masks_dirs():
+            if not os.path.isdir(old):
+                continue
+            for name in os.listdir(old):
+                src = os.path.join(old, name)
+                dst = os.path.join(folder, name)
+                if (
+                    name.lower().endswith(".json")
+                    and os.path.isfile(src)
+                    and not os.path.exists(dst)
+                ):
+                    shutil.copy2(src, dst)
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write("Masks from the old folders were copied here once.\n")
+    except OSError:
+        pass
+
+
+def masks_dir() -> str:
+    """Where saved pixel masks are written and read: <user_data_dir>/masks.
+
+    The first call copies in any masks saved in the old places (see
+    'legacy_masks_dirs'), so moving the folder loses nothing.
+    """
+    folder = os.path.join(user_data_dir(), "masks")
+    _migrate_masks(folder)
+    return folder
+
+
+def custom_firmware_dir() -> str:
+    """Where firmware added from Firmware ▸ "Add custom firmware…" is kept.
+
+    <user_data_dir>/firmware -- see 'user_data_dir' for why there. An added
+    bitstream belongs to this user, not to the repo or the release, and the
+    shipped short_exposure / long_exposure bitstreams are never touched.
+    """
+    return os.path.join(user_data_dir(), "firmware")
 
 
 def params_camera_dir() -> str:

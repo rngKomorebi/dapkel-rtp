@@ -35,11 +35,17 @@ from ._paths import (
     BITFILE_NAME,
     FIRMWARE_LONG_EXPOSURE,
     FIRMWARE_SHORT_EXPOSURE,
-    firmware_bitfile,
     functions_dir,
     programs_dir,
-    resolve_pwr_mgt_cwd,
 )
+from .firmware_store import (
+    firmware_metadata,
+    is_custom,
+    label_of,
+    resolve_bitstream,
+    timing_of,
+)
+from .firmware_widgets import FirmwareCombo
 from .tab_acquisition import (
     BIAS_TIP,
     EXP_UI,
@@ -101,7 +107,8 @@ class JobBlock(QFrame):
 
     def __init__(self, programs: list, parent=None):
         super().__init__(parent)
-        self._firmware = FIRMWARE_SHORT_EXPOSURE
+        # The timing model of the selected firmware -- all a job needs to know.
+        self._timing = FIRMWARE_SHORT_EXPOSURE
         # Background and border come from the 'JobBlock' rule in style.make_qss.
 
         lay = QHBoxLayout(self)
@@ -185,21 +192,23 @@ class JobBlock(QFrame):
         for spin in (self.exp_spin, self.nacq_spin):
             spin.valueChanged.connect(self._refresh_frame_label)
         self.nframes_combo.currentIndexChanged.connect(self._refresh_frame_label)
-        self.set_firmware(self._firmware)
+        self.set_timing(self._timing)
 
     def set_number(self, n: int):
         self._num_label.setText(str(n))
 
-    def set_firmware(self, firmware: str) -> float | None:
-        """Apply a firmware's meaning to this job's shutter box.
+    def set_timing(self, timing: str) -> float | None:
+        """Apply a timing model's meaning to this job's shutter box.
 
-        The register is the same in both firmwares but the frame it sits in is
-        not, so the label, the tooltip and the cap all move with it. Returns the
-        shutter value if it had to be clamped, else None, so the tab can say so
-        rather than silently changing a number the operator typed.
+        *timing* is 'short_exposure' or 'long_exposure' -- for a custom
+        firmware, the model it was added with. The register is the same in both
+        but the frame it sits in is not, so the label, the tooltip and the cap
+        all move with it. Returns the shutter value if it had to be clamped,
+        else None, so the tab can say so rather than silently changing a number
+        the operator typed.
         """
-        self._firmware = firmware
-        ui = EXP_UI[firmware]
+        self._timing = timing
+        ui = EXP_UI[timing]
         self.exp_label.setText(ui["label"])
         self.exp_spin.setToolTip(ui["tip"])
         before = self.exp_spin.value()
@@ -210,7 +219,7 @@ class JobBlock(QFrame):
 
     def frame_acq_time_us(self) -> float:
         """This job's frame length under the currently selected firmware."""
-        if self._firmware == FIRMWARE_LONG_EXPOSURE:
+        if self._timing == FIRMWARE_LONG_EXPOSURE:
             return self.exp_spin.value() + FRAME_READOUT_US
         return FRAME_READOUT_US
 
@@ -332,18 +341,9 @@ class ChainAcquisitionTab(QWidget):
         rig_row.setSpacing(8)
 
         rig_row.addWidget(QLabel("Firmware:"))
-        self.firmware_combo = QComboBox()
+        self.firmware_combo = FirmwareCombo()
         self.firmware_combo.setMinimumWidth(200)
         self.firmware_combo.setToolTip(FIRMWARE_TIP)
-        for version, text in (
-            (FIRMWARE_SHORT_EXPOSURE, "short_exposure  (9 µs frame)"),
-            (FIRMWARE_LONG_EXPOSURE, "long_exposure  (shutter + 9 µs)"),
-        ):
-            missing = firmware_bitfile(version) is None
-            self.firmware_combo.addItem(
-                text + ("   [bitstream missing]" if missing else ""),
-                userData=version,
-            )
         rig_row.addWidget(self.firmware_combo)
 
         rig_row.addSpacing(16)
@@ -459,7 +459,7 @@ class ChainAcquisitionTab(QWidget):
         block.program_combo.currentIndexChanged.connect(
             lambda _idx, b=block: self._on_job_program_change(b)
         )
-        self.firmware_combo.currentIndexChanged.connect(self._on_firmware_change)
+        self.firmware_combo.firmwareChanged.connect(self._on_firmware_change)
         FPGA.changed.connect(self._on_fpga_changed)
 
     def _on_add_job_clicked(self):
@@ -485,7 +485,7 @@ class ChainAcquisitionTab(QWidget):
         _init_default_job / _on_add_job_clicked) since only job #1 should
         gate Power Mgt / Run Chain."""
         block = JobBlock(self._programs, self._jobs_container)
-        block.set_firmware(self._firmware())
+        block.set_timing(self._timing())
         block.remove_requested.connect(self._remove_job)
         self._jobs_layout.insertWidget(
             max(0, self._jobs_layout.count() - 1), block
@@ -522,7 +522,12 @@ class ChainAcquisitionTab(QWidget):
     # ------------------------------------------------------------------
 
     def _firmware(self) -> str:
-        return self.firmware_combo.currentData() or FIRMWARE_SHORT_EXPOSURE
+        """The selected firmware key -- which bitstream (see firmware_store)."""
+        return self.firmware_combo.key()
+
+    def _timing(self) -> str:
+        """The timing model the selected firmware follows."""
+        return timing_of(self._firmware()) or FIRMWARE_SHORT_EXPOSURE
 
     def _on_fpga_changed(self):
         """Another tab reprogrammed the FPGA: stop claiming it is ready.
@@ -555,14 +560,15 @@ class ChainAcquisitionTab(QWidget):
             return
         program, firmware = FPGA.loaded
         self.fpga_label.setText(
-            f"FPGA: {firmware} · {os.path.basename(program)}"
+            f"FPGA: {label_of(firmware)} · {os.path.basename(program)}"
         )
 
-    def _on_firmware_change(self, _idx: int = 0):
+    def _on_firmware_change(self, _key: str = ""):
         """Re-label every job's shutter box, then reprogram the FPGA."""
-        firmware = self._firmware()
+        name = label_of(self._firmware())
+        timing = self._timing()
         clamped = [
-            (i, block.set_firmware(firmware))
+            (i, block.set_timing(timing))
             for i, block in enumerate(self._job_blocks, 1)
         ]
         if self._job_blocks:
@@ -573,7 +579,7 @@ class ChainAcquisitionTab(QWidget):
         for i, value in clamped:
             if value is not None:
                 self._log(
-                    f"Job {i}: shutter capped at {value:.3f} µs by {firmware}."
+                    f"Job {i}: shutter capped at {value:.3f} µs by {name}."
                 )
 
     def _on_job_program_change(self, block: JobBlock):
@@ -608,13 +614,10 @@ class ChainAcquisitionTab(QWidget):
             return
 
         firmware = self._firmware()
-        cwd, bitfile = resolve_pwr_mgt_cwd(firmware)
+        name = label_of(firmware)
+        cwd, bitfile, _, fell_back = resolve_bitstream(firmware)
         if bitfile is None:
-            self._log(
-                f"ERROR: no {BITFILE_NAME} for {firmware}, and none in the "
-                f"legacy folder either. Put one in "
-                f"{os.path.join(cwd, 'bitfile')}."
-            )
+            self._log(self._missing_bitstream_message(firmware, cwd))
             return
 
         self.pwr_btn.setEnabled(False)
@@ -623,8 +626,8 @@ class ChainAcquisitionTab(QWidget):
         self._add_btn.setEnabled(False)
         self.firmware_combo.setEnabled(False)
         self.log_edit.clear()
-        self._log(f"--- Power management initialisation ({firmware}) ---")
-        if firmware_bitfile(firmware) is None:
+        self._log(f"--- Power management initialisation ({name}) ---")
+        if fell_back:
             self._log(
                 f"  ! no bitstream at params/camera/{firmware}/bitfile/"
                 f"{BITFILE_NAME} — falling back to the legacy one. The "
@@ -638,6 +641,19 @@ class ChainAcquisitionTab(QWidget):
         self._pwr_worker.log.connect(self._log)
         self._pwr_worker.finished.connect(self._on_pwr_finished)
         self._pwr_worker.start()
+
+    @staticmethod
+    def _missing_bitstream_message(firmware: str, cwd: str) -> str:
+        folder = os.path.join(cwd, "bitfile")
+        if is_custom(firmware):
+            return (
+                f"ERROR: the custom firmware {label_of(firmware)} has no "
+                f"{BITFILE_NAME} in {folder}. Add it again."
+            )
+        return (
+            f"ERROR: no {BITFILE_NAME} for {firmware}, and none in the "
+            f"legacy folder either. Put one in {folder}."
+        )
 
     def _on_pwr_finished(self, success: bool, msg: str):
         self.pwr_btn.setEnabled(True)
@@ -700,21 +716,12 @@ class ChainAcquisitionTab(QWidget):
         The worker fills in everything it passed to the exe, so nothing here
         can disagree with what was actually run. See 'functions.metadata'.
         """
-        firmware = self._firmware()
-        _, resolved_bit = resolve_pwr_mgt_cwd(firmware)
         bias = self.bias_spin.value()
         loaded = FPGA.loaded
         return {
             "program_file": program_path,
-            "firmware_version": firmware,
-            "firmware_bitfile": resolved_bit,
-            "firmware_bitfile_source": (
-                firmware
-                if firmware_bitfile(firmware) is not None
-                else "legacy fallback (params/camera/bitfile)"
-            ),
-            "firmware_programmed_this_session": bool(
-                loaded is not None and loaded[1] == firmware
+            **firmware_metadata(
+                self._firmware(), loaded[1] if loaded is not None else None
             ),
             "chip_config_bits": dict(self._chip_state),
             "bias_voltage_v": bias if bias > 0 else None,
@@ -723,7 +730,12 @@ class ChainAcquisitionTab(QWidget):
                 "program_file": (
                     os.path.basename(loaded[0]) if loaded is not None else None
                 ),
-                "firmware_version": loaded[1] if loaded is not None else None,
+                "firmware_version": (
+                    timing_of(loaded[1]) if loaded is not None else None
+                ),
+                "firmware_name": (
+                    label_of(loaded[1]) if loaded is not None else None
+                ),
                 "clk_shift": CLK_SHIFT,
                 "nbits": NBITS,
             },
@@ -756,16 +768,14 @@ class ChainAcquisitionTab(QWidget):
         jp = self._pending_jobs[0]
         firmware = self._firmware()
         if (jp["program_path"], firmware) != FPGA.loaded:
-            cwd, bitfile = resolve_pwr_mgt_cwd(firmware)
+            cwd, bitfile, _, _ = resolve_bitstream(firmware)
             if bitfile is None:
-                self._log(
-                    f"ERROR: no {BITFILE_NAME} for {firmware}, and none in the "
-                    "legacy folder either."
-                )
+                self._log(self._missing_bitstream_message(firmware, cwd))
                 self._on_chain_done(False)
                 return
             self._log(
-                f"\nProgramming FPGA for {jp['program_tag']} ({firmware})…"
+                f"\nProgramming FPGA for {jp['program_tag']} "
+                f"({label_of(firmware)})…"
             )
             self._pwr_mgt_pending_state = (jp["program_path"], firmware)
             self._pwr_worker = PowerMgtWorker(
@@ -796,10 +806,10 @@ class ChainAcquisitionTab(QWidget):
         exposure_time = round(jp["exp_time_us"] * 1e-6 / CLK_PERIOD)
 
         last_index = jp["start_index"] + jp["nacq"] - 1
-        firmware = self._firmware()
+        firmware = label_of(self._firmware())
         frame_us = (
             jp["exp_time_us"] + FRAME_READOUT_US
-            if firmware == FIRMWARE_LONG_EXPOSURE
+            if self._timing() == FIRMWARE_LONG_EXPOSURE
             else FRAME_READOUT_US
         )
         self._log(

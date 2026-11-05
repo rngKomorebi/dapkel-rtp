@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-05
+
+### Added
+
+- Custom firmware. Every Firmware box (Single Acquisition, Chain Acquisition,
+  Live View) now ends with *Add custom firmware…*: pick a `.bit` (e.g.
+  `Kelpie_FW_external_APD.bit`), name it, and say whether it follows
+  `short_exposure` or `long_exposure` timing. The app copies it into
+  `%LOCALAPPDATA%\DAPKEL\dapkel-rtp\firmware` (per user, shared by the exe and
+  a source run), one folder per firmware laid out as
+  `<name>/bitfile/Kelpie_top.bit` plus a `firmware.json`, so it is listed again
+  after a restart, with a newer exe, and after the original is deleted. The
+  shipped bitstreams and the release exe are untouched. *Remove custom
+  firmware…* deletes the copy; a firmware still selected in any box cannot be
+  removed. *Open firmware folder…* shows the folder in Explorer.
+  Adding or removing on one tab updates the other tabs' boxes without changing
+  their selection or reprogramming the FPGA.
+- `metadata.json` gains `firmware_name` (top level and under
+  `power_management`). `firmware_version` stays the timing model, the word
+  `dapkel` reads; for a custom firmware it is the timing it was added with, and
+  `firmware_bitfile_source` reads `custom: <name> (added from <path>)`.
+
+### Changed
+
+- Saved pixel masks move to `%LOCALAPPDATA%\DAPKEL\dapkel-rtp\masks`, from a
+  `masks` folder beside the exe (or `src/dapkel_rtp/params/masks/` from
+  source). An exe kept on the desktop no longer puts a folder there, and a
+  newer exe finds the same masks. On first start the old folder's masks are
+  copied across once; the originals stay, and nothing already in the new
+  folder is overwritten.
+- The FPGA state now tracks which bitstream is loaded, not just its timing
+  model, so switching between a shipped firmware and a custom one with the same
+  timing reprograms the FPGA. A custom firmware whose copy has gone stops Power
+  Mgt with an error instead of falling back to the legacy bitstream.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
